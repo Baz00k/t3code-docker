@@ -211,6 +211,13 @@ if ($('mint')) {
   // through pasting - vanish under you a few seconds after they appear.
   let panelActive = null;
 
+  // A minted pairing link, tracked until the device it was made for shows up.
+  // The sessions that existed at mint time are the baseline; a new one is what
+  // proves the scan landed. Held here, not in the DOM, so the periodic refresh
+  // can advance the tracker without repainting the QR panel underneath it.
+  let minted = null;
+  let lastSessions = null;
+
   // ------------------------------------------------------------ pairing --
   let ttl = '30d';
   for (const button of $('ttl').querySelectorAll('button')) {
@@ -247,6 +254,16 @@ if ($('mint')) {
       });
       const data = await res.json();
       if (!res.ok) throw new Error(data.error || 'Could not create a link');
+      // Baseline the session list before the panel goes up. lastSessions is
+      // null only if no status read has finished yet, in which case the next
+      // load captures the baseline instead.
+      minted = {
+        id: data.id,
+        expiresAt: data.expiresAt,
+        baseline: lastSessions ? new Set(lastSessions) : null,
+        paired: false,
+        seen: false,
+      };
       $('out').innerHTML =
         // The tracker spans the panel rather than sharing a column with the QR:
         // beside a 168px code it never had the width to stay on one line, and a
@@ -392,6 +409,55 @@ if ($('mint')) {
         + 'Every link created has been redeemed.</div>';
   };
 
+  // ---------------------------------------------------- pairing progress --
+  // The tracker painted at mint time used to sit on "Device connects" forever,
+  // even after the phone had paired - nothing ever repainted it. Watch the
+  // session list instead, and hand the user onward the moment their device
+  // lands, or tell them when the link they are looking at can no longer work.
+  const renderPairProgress = (s) => {
+    if (!minted || minted.paired) return;
+    if (minted.baseline === null) {
+      minted.baseline = new Set(s.sessions.map((c) => c.sessionId));
+      return;
+    }
+
+    const fresh = s.sessions.find((c) => !minted.baseline.has(c.sessionId));
+    if (fresh) {
+      minted.paired = true;
+      const name = fresh.client?.label || fresh.subject || 'your device';
+      $('out').innerHTML =
+        '<div class="tc-panel">' + STEPS(3)
+        + '<p class="tc-hint">Paired with <strong>' + esc(name) + '</strong>. '
+        + 'You can close this page - the device is already signed in.</p>'
+        + '<div class="tc-copyrow">'
+        + '<a class="tc-btn tc-btn--primary" href="' + esc(s.publicUrl || '/')
+        + '" target="_blank" rel="noopener">Open T3 Code</a></div></div>';
+      toast('Device paired', CHECK);
+      return;
+    }
+
+    const listed = s.pairings.some((l) => l.id === minted.id);
+    if (listed) minted.seen = true;
+    const expired = minted.expiresAt && Date.parse(minted.expiresAt) < Date.now();
+    if (expired) {
+      minted.paired = true;
+      $('out').innerHTML =
+        '<div class="tc-panel">' + STEPS(1)
+        + '<p class="tc-hint">This link expired before a device used it. '
+        + 'Create another one to pair.</p></div>';
+      return;
+    }
+    // Only call it revoked once the list has shown the link at least once: the
+    // status read that follows a mint can land before the pairing is listed.
+    if (minted.seen && !listed) {
+      minted.paired = true;
+      $('out').innerHTML =
+        '<div class="tc-panel">' + STEPS(1)
+        + '<p class="tc-hint">This link was revoked before a device used it. '
+        + 'Create another one to pair.</p></div>';
+    }
+  };
+
   // -------------------------------------------------------------- ports --
   // Polled separately from the rest of the page and on a shorter interval: a
   // tunnel takes a few seconds to be handed a hostname, and a port appearing
@@ -529,6 +595,10 @@ if ($('mint')) {
       return;
     }
 
+    // Baselines for the next mint: what the next new session will be measured
+    // against.
+    lastSessions = s.sessions.map((c) => c.sessionId);
+
     const build = s.image && s.image.version
       ? s.image.version + (s.image.variant ? ' · ' + s.image.variant : '')
       : 'unversioned build';
@@ -550,6 +620,7 @@ if ($('mint')) {
 
     renderStrip(s);
     renderSessions(s);
+    renderPairProgress(s);
     renderDetails(s);
     if (!panelActive) renderAgents(s);
 

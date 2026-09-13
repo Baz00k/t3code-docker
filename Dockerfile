@@ -185,6 +185,12 @@ COPY docker/entrypoint.sh /usr/local/bin/entrypoint.sh
 COPY docker/bin/ /usr/local/bin/
 COPY docker/setup/ /opt/t3-setup/
 COPY examples/ /opt/examples/
+# T3 Code's client has no link to the setup console, so a fresh install that
+# lands on the pairing screen has nowhere to go. The pill is injected into the
+# static shell - it probes for the console and hides itself when absent - and
+# patch.mjs fails the build if upstream moves the layout it relies on.
+COPY docker/t3-client/ /usr/local/share/t3-client/
+RUN node /usr/local/share/t3-client/patch.mjs
 RUN chmod +x /usr/local/bin/entrypoint.sh /usr/local/bin/t3-*
 
 ENV T3CODE_HOME=/home/t3/.t3 \

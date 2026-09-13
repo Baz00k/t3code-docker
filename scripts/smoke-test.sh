@@ -271,6 +271,13 @@ esac
 check "the minted link is live on the running server" \
   "docker exec -u t3 $NAME t3 auth pairing list --json 2>/dev/null | grep -q orchestration:operate"
 
+# The setup console is the front door for a fresh install, but T3 Code's own
+# UI does not link to it - the pill injected into the client shell is the only
+# route back. Assert it is in the served HTML, not just the built file, so a
+# T3 bump cannot quietly drop it.
+check "the T3 client links to the setup console" \
+  "docker exec $NAME sh -c 'curl -fsS http://127.0.0.1:3773/ | grep -q t3-setup-pill'"
+
 # Pulling a new image should be confirmable from the page itself rather than by
 # guessing, so the build is stamped in at the end of the Dockerfile and shown in
 # the top bar. Assert the stamp survives into the running container and names

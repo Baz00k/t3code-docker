@@ -149,6 +149,16 @@ server's health, so a pull can be confirmed from the page instead of guessed at.
 It reads a build stamp baked in at image build time; a locally built image says
 `dev`, and one built outside CI reports itself as not stamped.
 
+Creating a link tracks it: once the device it was made for appears, the panel
+flips to **Paired** with an **Open T3 Code** button, and says so if the link
+expires or is revoked before anyone uses it.
+
+When the console is reachable at `/__setup` on the same hostname — the routing
+in [Exposing it through one hostname](#exposing-it-through-one-hostname) — T3
+Code's own UI shows a small **Setup** button in the bottom-left corner that
+comes back here, so a device that lands on the pairing screen first is not a
+dead end. It probes for the console and renders nothing when there is none.
+
 ### Signing agents in from the page
 
 Each agent gets the actions it actually supports, established by running the
