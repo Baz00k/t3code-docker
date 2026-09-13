@@ -427,11 +427,13 @@ if ($('mint')) {
       const name = fresh.client?.label || fresh.subject || 'your device';
       $('out').innerHTML =
         '<div class="tc-panel">' + STEPS(3)
+        + '<div class="tc-split"><div class="tc-stack">'
         + '<p class="tc-hint">Paired with <strong>' + esc(name) + '</strong>. '
         + 'You can close this page - the device is already signed in.</p>'
         + '<div class="tc-copyrow">'
         + '<a class="tc-btn tc-btn--primary" href="' + esc(s.publicUrl || '/')
-        + '" target="_blank" rel="noopener">Open T3 Code</a></div></div>';
+        + '" target="_blank" rel="noopener">Open T3 Code</a></div>'
+        + '</div></div></div>';
       toast('Device paired', CHECK);
       return;
     }
@@ -443,8 +445,10 @@ if ($('mint')) {
       minted.paired = true;
       $('out').innerHTML =
         '<div class="tc-panel">' + STEPS(1)
+        + '<div class="tc-split"><div class="tc-stack">'
         + '<p class="tc-hint">This link expired before a device used it. '
-        + 'Create another one to pair.</p></div>';
+        + 'Create another one to pair.</p>'
+        + '</div></div></div>';
       return;
     }
     // Only call it revoked once the list has shown the link at least once: the
@@ -453,8 +457,10 @@ if ($('mint')) {
       minted.paired = true;
       $('out').innerHTML =
         '<div class="tc-panel">' + STEPS(1)
+        + '<div class="tc-split"><div class="tc-stack">'
         + '<p class="tc-hint">This link was revoked before a device used it. '
-        + 'Create another one to pair.</p></div>';
+        + 'Create another one to pair.</p>'
+        + '</div></div></div>';
     }
   };
 

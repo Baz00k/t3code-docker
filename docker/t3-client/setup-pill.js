@@ -1,5 +1,5 @@
 // A link from T3 Code back to the setup console, injected into T3 Code's
-// client shell at image build time by scripts/patch-t3-client.mjs.
+// client shell at image build time by docker/t3-client/patch.mjs.
 //
 // The two services are separate processes on separate ports, and nothing in
 // T3 Code knows the console exists. A user who lands on the T3 UI first and
@@ -15,7 +15,11 @@
 // must never contain a closing script tag sequence.
 (() => {
   const PROBE_PATHS = ['/__setup/', '/setup/'];
-  const MARKER = '<title>T3 Code setup</title>';
+  // Built from parts on purpose: T3's SPA fallback serves this very script for
+  // an unknown path, so a contiguous marker here would let a deployment with
+  // no console routed answer its own probe with itself.
+  const MARKER = ['<title>', 'T3 Code setup', '</title>'].join('');
+  let setupPath = null;
 
   const looksLikeSetup = async (path) => {
     try {
@@ -72,9 +76,34 @@
     document.body.appendChild(link);
   };
 
+  // The pill exists for first contact. Once T3 has a session it lives on
+  // /chat/... and its own controls occupy the bottom-left corner, which is
+  // exactly where the pill would sit. Keep it to the pairing screens, where
+  // that corner is empty, rather than floating over the product.
+  const pairingScreen = () => {
+    const path = location.pathname.replace(/\/+$/, '') || '/';
+    return path === '/' || path === '/pair';
+  };
+
+  const pill = () => document.querySelector('.t3-setup-pill');
+
+  const sync = () => {
+    if (!setupPath) return;
+    if (pairingScreen() && !pill()) render(setupPath);
+    else if (!pairingScreen() && pill()) pill().remove();
+  };
+
   const start = async () => {
     for (const path of PROBE_PATHS) {
-      if (await looksLikeSetup(path)) return render(path);
+      if (await looksLikeSetup(path)) {
+        setupPath = path;
+        sync();
+        // Routing is client-side, so a paired device leaves the pairing screen
+        // without a reload. Watch for that instead of waiting for the next one.
+        window.addEventListener('popstate', sync);
+        setInterval(sync, 500);
+        return;
+      }
     }
   };
 

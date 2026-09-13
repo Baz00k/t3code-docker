@@ -155,9 +155,10 @@ expires or is revoked before anyone uses it.
 
 When the console is reachable at `/__setup` on the same hostname — the routing
 in [Exposing it through one hostname](#exposing-it-through-one-hostname) — T3
-Code's own UI shows a small **Setup** button in the bottom-left corner that
-comes back here, so a device that lands on the pairing screen first is not a
-dead end. It probes for the console and renders nothing when there is none.
+Code's own pairing screen shows a small **Setup** button in the bottom-left
+corner that comes back here, so a device that lands on the pairing screen first
+is not a dead end. It appears only on the pairing screens, where no T3 Code
+controls live, and renders nothing when the console is not routed there.
 
 ### Signing agents in from the page
 
