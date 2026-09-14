@@ -278,7 +278,21 @@ if ($('mint')) {
         + esc(data.pairUrl) + '" data-copy-msg="Pairing link copied">Copy</button>'
         + '<a class="tc-btn tc-btn--outline" href="' + esc(data.pairUrl)
         + '" target="_blank" rel="noopener">Open</a>'
-        + '</div></div>'
+        + '</div>'
+        // Desktop clients that add a remote environment ask for the server URL
+        // and the code as separate fields, so the token is offered on its own
+        // rather than only inside the link fragment.
+        + (data.credential
+          ? '<div class="tc-field"><label class="tc-label">Pair code</label>'
+            + '<div class="tc-copyrow">'
+            + '<div class="tc-linkbox">' + esc(data.credential) + '</div>'
+            + '<button type="button" class="tc-btn tc-btn--outline" data-copy="'
+            + esc(data.credential) + '" data-copy-msg="Pair code copied">Copy</button>'
+            + '</div>'
+            + '<span class="tc-hint">For clients that ask for a server URL and a code '
+            + 'separately. The server URL is the public URL above.</span></div>'
+          : '')
+        + '</div>'
         + (data.qr ? '<div class="tc-qr">' + data.qr + '</div>' : '')
         + '</div></div>';
       $('label').value = '';

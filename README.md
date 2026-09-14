@@ -137,8 +137,10 @@ Leave `T3_SETUP_KEY` empty and one is generated at boot and printed to the log;
 setting it yourself keeps it stable when the container is recreated. Then open
 port 3774, enter the key, and press **Create pairing link** — you get a URL and
 a QR code built against your public address, valid for as long as you choose.
-The page also shows whether the server is healthy, whether `T3_PUBLIC_URL` is
-set, and which agents are signed in.
+The same panel shows the **pair code** on its own, for clients like the desktop
+app that ask for a server URL and a code as separate fields. The page also
+shows whether the server is healthy, whether `T3_PUBLIC_URL` is set, and which
+agents are signed in.
 
 Beyond pairing it is a small management surface: connected clients with a
 **Revoke** button each, outstanding unredeemed links with the same, the
