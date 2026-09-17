@@ -67,15 +67,19 @@ and every branch is named after the ticket that owns it.
 
 `scripts/measure-image.sh` is the single measurement entry point. It measures a
 locally built target through the container runtime (`slim full`), or a pushed
-multi-arch reference through the registry API without a daemon
+reference through the registry API without a daemon
 (`--registry HOST/REPO`).
+
+The baseline is measured on `linux/amd64` only. `linux/arm64` is expected to
+behave analogously but is not separately built, tested, or required as evidence
+(the same policy as [`TOOLCHAIN-MANAGEMENT-PLAN.md`](../../TOOLCHAIN-MANAGEMENT-PLAN.md)).
 
 The numbers below were measured with:
 
 ```sh
 scripts/measure-image.sh \
   --registry ghcr.io/dizys/t3code-docker \
-  --platform linux/amd64,linux/arm64 \
+  --platform linux/amd64 \
   --unpacked slim full
 ```
 
@@ -86,9 +90,7 @@ the compressed totals are exact; `--unpacked` streams every layer through
 | Target | Arch | Compressed | Unpacked | Compressed (bytes) | Unpacked (bytes) |
 | --- | --- | ---: | ---: | ---: | ---: |
 | `slim` | amd64 | 1.10 GiB | 2.94 GiB | 1,179,995,124 | 3,156,061,184 |
-| `slim` | arm64 | 1.01 GiB | 2.67 GiB | 1,088,296,375 | 2,872,006,144 |
 | `full` | amd64 | 1.96 GiB | 5.19 GiB | 2,107,246,452 | 5,571,555,840 |
-| `full` | arm64 | 1.84 GiB | 4.78 GiB | 1,975,179,322 | 5,127,220,224 |
 
 ### Artifact identity
 
@@ -99,11 +101,9 @@ build workflow.
 | Target | Arch | Manifest digest |
 | --- | --- | --- |
 | `slim` | amd64 | `sha256:12ddceb1b60f8f4edbc627b3b25550a3a223ad5cd71b12e4f47e0b32e75d9b20` |
-| `slim` | arm64 | `sha256:2db1e4650a4fc68b9452ed94f3b634b76be66d8583f975353be56a4bdcdc4b46` |
 | `full` | amd64 | `sha256:57f675f336d00e0d1d0034c20612b44312310b8d5fecba71b5dd771fabe26034` |
-| `full` | arm64 | `sha256:1e285c08d8047ba0d4f6b679e5213142181f56b848b67ce9cc65e69b9d838cf8` |
 
-All four images carry:
+Both images carry:
 
 ```text
 org.opencontainers.image.revision = 2ffeaede9166404a0a607ea7cd1356a9588366db
@@ -113,7 +113,7 @@ org.opencontainers.image.version  = v0.4.5
 ### Native rebuild and startup
 
 A local image is the authoritative measure of the source on the integration
-branch. On a native amd64 or arm64 host with Docker:
+branch. On a native amd64 host with Docker:
 
 ```sh
 scripts/measure-image.sh slim full          # builds a missing target, then measures
@@ -153,9 +153,9 @@ and ~1.2% for `full`, which is the drift the floating inputs below describe. It
 is a fresh measurement of the current source, not a byte-identical reproduction
 of `v0.4.5`.
 
-**Outstanding:** arm64 startup timing still requires a native arm64 host or CI
-(`scripts/measure-image.sh slim full`, or a pulled `t3code/slim` tag with
-`--no-build`). The registry sizes above are complete for both architectures.
+The amd64 baseline is complete: registry compressed/unpacked totals, artifact
+digests, and native startup times are all recorded above. No arm64 work is
+outstanding, because arm64 is not part of this effort's evidence.
 
 ## Known Floating Inputs
 

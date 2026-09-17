@@ -15,6 +15,11 @@ The result should provide:
 - an offline-safe T3 server and setup surface;
 - equivalent behavior on `linux/amd64` and `linux/arm64`.
 
+All verification in this plan is performed on `linux/amd64`. `linux/arm64` is
+expected to behave analogously, but it is not separately built, tested, or
+required as evidence; nothing in this effort is blocked on arm64 hardware or
+CI.
+
 This is developed end-to-end on a fork, then proposed to
 `dizys/t3code-docker` as one coherent upstream pull request. The upstream remote
 remains read-only. If the change is not accepted upstream, the fork remains a
@@ -140,8 +145,8 @@ mise is upgraded.
 
 Universal idiomatic detection is a deliberate product change and lands in its
 own PR. Tests cover representative shared manifests, explicit-config
-precedence, malformed files, unsupported versions, and both architectures; they
-do not duplicate mise's complete backend test suite.
+precedence, malformed files, and unsupported versions; they do not duplicate
+mise's complete backend test suite.
 
 Set `not_found_system_fallback = false`, but scope its guarantee correctly: it
 only applies after execution reaches mise. A configured missing interpreter is
@@ -285,7 +290,7 @@ Acceptance criteria:
   Node version.
 - Project npm cannot modify the T3 installation.
 - Root commands do not resolve user mise shims or create root-owned mise state.
-- Native amd64 and arm64 CI passes.
+- Native amd64 CI passes.
 
 ### Milestone 2: Idiomatic Project Detection
 
@@ -336,7 +341,7 @@ Add the new targets alongside `slim` and `full`.
   harnesses.
 - `browser` adds Chromium, fonts, and both MCP servers.
 - Validate Go, Rust, Bun, Deno, uv, and representative Node/Python versions
-  through mise on native amd64 and arm64.
+  through mise on native amd64.
 - Verify Rust includes the currently promised `clippy` and `rustfmt` components.
 - Update smoke tests to select capabilities explicitly rather than inferring
   them from the presence of Chromium.
@@ -347,7 +352,7 @@ Add the new targets alongside `slim` and `full`.
 Acceptance criteria:
 
 - New targets pass their complete contracts while old targets remain unchanged.
-- Browser probes drive real pages on both architectures.
+- Browser probes drive real pages.
 - `t3-browser-mcp` registers the installed MCP server with managed Claude,
   Codex, and OpenCode harnesses and produces valid configuration.
 - Published-artifact identity is proven.
@@ -369,8 +374,8 @@ Acceptance criteria:
 
 - A fresh `core` install can install and launch every supported harness.
 - The documented representative runtime set installs and runs without an image
-  rebuild on both architectures; other mise-supported tools remain best-effort
-  according to their backend and system dependency requirements.
+  rebuild on amd64; other mise-supported tools remain best-effort according to
+  their backend and system dependency requirements.
 - No documentation claims removed tools are preinstalled.
 - Release CI reports compressed and unpacked size changes against the old
   `slim` and `full` baselines.
@@ -386,7 +391,7 @@ Keep integration tests focused on behavior owned by this repository:
   used by migrated tools;
 - managed harness lifecycle and actual T3 provider launch;
 - offline local health and bounded status responses;
-- native amd64 and arm64 builds;
+- native amd64 builds;
 - exact release artifact promotion;
 - real Chromium and MCP operation in `browser`.
 
@@ -425,7 +430,7 @@ The upstream PR description should include:
 - the user-visible problem it solves;
 - what intentionally remains unchanged;
 - architecture and persistence implications;
-- verification performed on amd64 and arm64;
+- verification performed on amd64;
 - measured image-size impact where relevant;
 - migration or rollback considerations.
 
