@@ -81,7 +81,7 @@ jobs:
               *) echo "unknown target '$target' (want slim full core browser)" >&2; exit 2 ;;
             esac
             targets="${targets}${targets:+,}$target"
-            test_matrix="$(jq -c \
+            test_matrix="$(jq -cn \
               --argjson matrix "$test_matrix" --arg target "$target" \
               --arg checks "$(capabilities "$target")" \
               --argjson e2e "$(needs_e2e "$target")" \
@@ -158,20 +158,43 @@ jobs:
           cache-from: type=gha,scope=${{ matrix.target }}-${{ matrix.platform }}
           cache-to: type=gha,mode=min,scope=${{ matrix.target }}-${{ matrix.platform }}
 
+      # buildx pushes an index when it attaches provenance, so the digest above
+      # refers to the index. The platform manifest is its member, and that is
+      # the artifact the capabilitiy checks and the promoted manifest must
+      # agree on.
+      - name: Resolve the platform digest
+        id: platform
+        env:
+          INDEX_DIGEST: ${{ steps.build.outputs.digest }}
+          ARCH: ${{ matrix.platform }}
+        run: |
+          set -euo pipefail
+          raw="$(docker buildx imagetools inspect --raw \
+            "${REGISTRY}/${{ needs.prepare.outputs.image }}@${INDEX_DIGEST}")"
+          digest="$(printf '%s' "$raw" | jq -r --arg arch "$ARCH" \
+            '.manifests[] | select((.platform.os // "") == "linux" and (.platform.architecture // "") == $arch) | .digest' | head -1)"
+          [ -n "$digest" ] && [ "$digest" != "null" ] \
+            || { echo "no linux/$ARCH member in $INDEX_DIGEST" >&2; exit 1; }
+          echo "digest=$digest" >> "$GITHUB_OUTPUT"
+
       - name: Record the built digest
         env:
           TARGET: ${{ matrix.target }}
           PLATFORM: linux/${{ matrix.platform }}
-          DIGEST: ${{ steps.build.outputs.digest }}
+          INDEX_DIGEST: ${{ steps.build.outputs.digest }}
+          PLATFORM_DIGEST: ${{ steps.platform.outputs.digest }}
         run: |
           mkdir -p /tmp/evidence
           jq -cn \
-            --arg target "$TARGET" --arg platform "$PLATFORM" --arg digest "$DIGEST" \
-            --arg ref "${REGISTRY}/${{ needs.prepare.outputs.image }}@${DIGEST}" \
+            --arg target "$TARGET" --arg platform "$PLATFORM" \
+            --arg digest "$PLATFORM_DIGEST" --arg indexDigest "$INDEX_DIGEST" \
+            --arg ref "${REGISTRY}/${{ needs.prepare.outputs.image }}@${PLATFORM_DIGEST}" \
+            --arg indexRef "${REGISTRY}/${{ needs.prepare.outputs.image }}@${INDEX_DIGEST}" \
             --arg sourceSha "$GITHUB_SHA" \
             --arg runUrl "${GITHUB_SERVER_URL}/${GITHUB_REPOSITORY}/actions/runs/${GITHUB_RUN_ID}" \
             --argjson tested false \
-            '{target:$target, platform:$platform, digest:$digest, ref:$ref, tested:$tested,
+            '{target:$target, platform:$platform, digest:$digest, indexDigest:$indexDigest,
+              ref:$ref, indexRef:$indexRef, tested:$tested,
               sourceSha:$sourceSha, runUrl:$runUrl}' \
             > "/tmp/evidence/build-${TARGET}-${{ matrix.platform }}.json"
 
@@ -387,13 +410,20 @@ jobs:
           : > "$evidence/candidate-evidence.ndjson"
           for target in $(jq -r '.[]' <<< "$TARGETS"); do
             amd64="$evidence/tested-${target}.json"
+            amd64_build="$evidence/build-${target}-amd64.json"
             arm64="$evidence/build-${target}-arm64.json"
             [ -f "$amd64" ] || { echo "missing tested amd64 evidence for $target" >&2; exit 1; }
+            [ -f "$amd64_build" ] || { echo "missing amd64 build evidence for $target" >&2; exit 1; }
             [ -f "$arm64" ] || { echo "missing arm64 evidence for $target" >&2; exit 1; }
             [ "$(jq -r .tested "$amd64")" = "true" ] \
               || { echo "$target amd64 evidence is not marked tested" >&2; exit 1; }
+            # The promoted members are the platform manifests the checks ran
+            # against. The source refs are the pushed indexes, so provenance
+            # stays attached to the candidate.
             amd64_digest="$(jq -r .digest "$amd64")"
+            amd64_index="$(jq -r .indexDigest "$amd64_build")"
             arm64_digest="$(jq -r .digest "$arm64")"
+            arm64_index="$(jq -r .indexDigest "$arm64")"
             tags=("${REGISTRY}/${SLUG}:${target}-candidate"
                   "${REGISTRY}/${SLUG}:${target}-candidate-${SHORT_SHA}")
             for tag in "${tags[@]}"; do
@@ -404,7 +434,7 @@ jobs:
             done
             docker buildx imagetools create \
               -t "${tags[0]}" -t "${tags[1]}" \
-              "${REGISTRY}/${SLUG}@${amd64_digest}" "${REGISTRY}/${SLUG}@${arm64_digest}"
+              "${REGISTRY}/${SLUG}@${amd64_index}" "${REGISTRY}/${SLUG}@${arm64_index}"
             scripts/verify-promoted-manifest.sh \
               --expect "linux/amd64=${amd64_digest}" \
               --expect "linux/arm64=${arm64_digest}" \

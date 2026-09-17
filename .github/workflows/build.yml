@@ -132,39 +132,65 @@ jobs:
           cache-from: type=gha,scope=${{ matrix.target }}-${{ matrix.platform }}
           cache-to: type=gha,mode=min,scope=${{ matrix.target }}-${{ matrix.platform }}
 
+      # buildx pushes an index when it attaches provenance, so the digest above
+      # refers to the index. The platform manifest is its member, and that is
+      # the artifact the smoke test below and the promoted manifest must agree
+      # on.
+      - name: Resolve the platform digest
+        id: platform
+        if: github.ref_type == 'tag' && (matrix.target == 'slim' || matrix.target == 'full')
+        env:
+          INDEX_DIGEST: ${{ steps.build.outputs.digest }}
+          ARCH: ${{ matrix.platform }}
+        run: |
+          set -euo pipefail
+          raw="$(docker buildx imagetools inspect --raw \
+            "${REGISTRY}/${{ steps.image.outputs.slug }}@${INDEX_DIGEST}")"
+          digest="$(printf '%s' "$raw" | jq -r --arg arch "$ARCH" \
+            '.manifests[] | select((.platform.os // "") == "linux" and (.platform.architecture // "") == $arch) | .digest' | head -1)"
+          [ -n "$digest" ] && [ "$digest" != "null" ] \
+            || { echo "no linux/$ARCH member in $INDEX_DIGEST" >&2; exit 1; }
+          echo "digest=$digest" >> "$GITHUB_OUTPUT"
+
       - name: Smoke test (native amd64)
         if: matrix.platform == 'amd64'
         env:
           VARIANT: ${{ matrix.target }}
           PUSHED_DIGEST: ${{ steps.build.outputs.digest }}
+          PLATFORM_DIGEST: ${{ steps.platform.outputs.digest }}
           PUSH_IMAGE: ${{ github.ref_type == 'tag' && (matrix.target == 'slim' || matrix.target == 'full') }}
         run: |
           if [ "$PUSH_IMAGE" = "true" ]; then
             scripts/smoke-test.sh --variant "$VARIANT" \
-              "${REGISTRY}/${{ steps.image.outputs.slug }}@${PUSHED_DIGEST}"
+              "${REGISTRY}/${{ steps.image.outputs.slug }}@${PLATFORM_DIGEST}"
           else
             scripts/smoke-test.sh --variant "$VARIANT" "t3code:${VARIANT}"
           fi
 
       # The evidence artifact is written only after the smoke test above passed,
-      # and it names the exact digest that was tested. `merge` promotes these
-      # digests without rebuilding anything.
+      # and it names the exact platform digest that was tested. `merge` promotes
+      # the pushed indexes without rebuilding anything and asserts that their
+      # members are these digests.
       - name: Record the tested digest
         if: github.ref_type == 'tag' && (matrix.target == 'slim' || matrix.target == 'full')
         env:
           VARIANT: ${{ matrix.target }}
           PLATFORM: linux/${{ matrix.platform }}
-          PUSHED_DIGEST: ${{ steps.build.outputs.digest }}
+          INDEX_DIGEST: ${{ steps.build.outputs.digest }}
+          PLATFORM_DIGEST: ${{ steps.platform.outputs.digest }}
           TESTED: ${{ matrix.platform == 'amd64' }}
         run: |
           mkdir -p /tmp/evidence
           jq -cn \
             --arg target "$VARIANT" --arg platform "$PLATFORM" \
-            --arg digest "$PUSHED_DIGEST" --arg sourceSha "$GITHUB_SHA" \
-            --arg ref "${REGISTRY}/${{ steps.image.outputs.slug }}@${PUSHED_DIGEST}" \
+            --arg digest "$PLATFORM_DIGEST" --arg indexDigest "$INDEX_DIGEST" \
+            --arg sourceSha "$GITHUB_SHA" \
+            --arg ref "${REGISTRY}/${{ steps.image.outputs.slug }}@${PLATFORM_DIGEST}" \
+            --arg indexRef "${REGISTRY}/${{ steps.image.outputs.slug }}@${INDEX_DIGEST}" \
             --arg runUrl "${GITHUB_SERVER_URL}/${GITHUB_REPOSITORY}/actions/runs/${GITHUB_RUN_ID}" \
             --argjson tested "$TESTED" \
-            '{target:$target, platform:$platform, digest:$digest, ref:$ref, tested:$tested,
+            '{target:$target, platform:$platform, digest:$digest, indexDigest:$indexDigest,
+              ref:$ref, indexRef:$indexRef, tested:$tested,
               sourceSha:$sourceSha, runUrl:$runUrl}' \
             > "/tmp/evidence/build-${VARIANT}-${{ matrix.platform }}.json"
 
@@ -239,12 +265,15 @@ jobs:
           for f in /tmp/evidence/*.json; do
             platform="$(jq -r .platform "$f")"
             digest="$(jq -r .digest "$f")"
+            index="$(jq -r .indexDigest "$f")"
             case "$platform" in
               linux/amd64) amd64_tested="$(jq -r .tested "$f")" ;;
               linux/arm64) arm64=$((arm64 + 1)) ;;
               *) echo "unexpected platform '$platform' in $f" >&2; exit 1 ;;
             esac
-            refs+=("${REGISTRY}/${SLUG}@${digest}")
+            # Promote the pushed index (provenance included); assert that its
+            # platform members are the manifests the smoke test ran against.
+            refs+=("${REGISTRY}/${SLUG}@${index}")
             expects+=(--expect "${platform}=${digest}")
           done
           [ "${#refs[@]}" -eq 2 ] \
@@ -259,9 +288,9 @@ jobs:
           {
             echo "### Promoted \`${{ matrix.target }}\`"
             echo
-            echo '| Platform | Digest | Tested |'
-            echo '| --- | --- | --- |'
-            jq -r '"| \(.platform) | `\(.digest)` | \(.tested) |"' /tmp/evidence/*.json
+            echo '| Platform | Member digest | Tested | Index digest |'
+            echo '| --- | --- | --- | --- |'
+            jq -r '"| \(.platform) | `\(.digest)` | \(.tested) | `\(.indexDigest)` |"' /tmp/evidence/*.json
             echo
             echo "Tags: $(printf "\`%s\` " "${tags[@]}")"
           } >> "$GITHUB_STEP_SUMMARY"

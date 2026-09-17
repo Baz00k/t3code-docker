@@ -20,16 +20,19 @@ compared against is in [`baseline.md`](./baseline.md).
 Two mechanisms enforce it:
 
 - **Build by digest.** On a release tag the build job pushes each platform
-  image by digest (`push-by-digest=true`). The smoke test then runs against
-  `registry/repo@sha256:...`, the pushed reference, not a local relabel. The
+  image by digest (`push-by-digest=true`). buildx attaches provenance, so the
+  pushed digest is an *index* whose `linux/<arch>` member is the platform
+  manifest. The job resolves that member and records both digests; the smoke
+  test runs against the exact member (`registry/repo@sha256:<platform>`). The
   digest-only evidence artifact is written *after* that step, so a failed smoke
   test leaves nothing to promote.
-- **Verify the manifest.** `scripts/verify-promoted-manifest.sh` re-reads the
-  promoted tag through the registry and asserts that each expected platform
-  maps to the expected digest, that neither platform is missing or duplicated,
-  and that no unexpected image member was added. Promotion fails on any
-  mismatch. Attestation manifests (`unknown/unknown`) are reported, not failed:
-  they are not pullable image members.
+- **Verify the manifest.** Promotion copies the pushed indexes (so provenance
+  stays attached) and `scripts/verify-promoted-manifest.sh` re-reads the
+  promoted tag through the registry and asserts that each platform member is
+  the exact digest that was built - and, for amd64, tested. It also fails on a
+  missing, duplicated, or unexpected image member. Attestation manifests
+  (`unknown/unknown`) are reported, not failed: they are not pullable image
+  members.
 
 The arm64 member is built and digest-mapped but not smoke-tested. That matches
 the effort's verification policy: both architectures are supported and
@@ -163,7 +166,9 @@ Evidence record shape:
   "target": "core",
   "platform": "linux/amd64",
   "digest": "sha256:...",
+  "indexDigest": "sha256:...",
   "ref": "ghcr.io/you/t3code@sha256:...",
+  "indexRef": "ghcr.io/you/t3code@sha256:...",
   "tested": true,
   "checks": ["infrastructure", "mise", "ownership", "runtime", "inventory", "smoke", "measure"],
   "size": [{ "compressed_bytes": 0, "unpacked_bytes": 0, "startup_seconds": 0.0 }],
@@ -173,10 +178,12 @@ Evidence record shape:
 }
 ```
 
-`tested` is `true` only in the test job's artifact, and only when every check
-step passed. The promotion job reads the amd64 digest *only* from the tested
-artifact, so a build that was never tested cannot be promoted even if its build
-artifact exists.
+`digest` is the platform manifest (the promoted member and, for amd64, the
+artifact the checks ran against); `indexDigest` is the pushed index buildx
+returned, which is what promotion copies. `tested` is `true` only in the test
+job's artifact, and only when every check step passed. The promotion job reads
+the amd64 platform digest *only* from the tested artifact, so a build that was
+never tested cannot be promoted even if its build artifact exists.
 
 ## Failure Rehearsal
 
@@ -258,6 +265,15 @@ scripts/smoke-test.sh --variant core t3code:core
 scripts/verify-promoted-manifest.sh \
   --expect linux/amd64=sha256:... --expect linux/arm64=sha256:... \
   ghcr.io/you/t3code:core-candidate
+
+# Rehearse promotion locally from two pushed indexes (provenance included):
+docker run -d -p 127.0.0.1:5005:5000 registry:2
+docker buildx imagetools create -t localhost:5005/t3code:core-candidate \
+  ghcr.io/you/t3code@sha256:<amd64-index> ghcr.io/you/t3code@sha256:<arm64-index>
+scripts/verify-promoted-manifest.sh \
+  --expect linux/amd64=<amd64-platform-manifest> \
+  --expect linux/arm64=<arm64-platform-manifest> \
+  localhost:5005/t3code:core-candidate
 ```
 
 `actionlint` (including its shellcheck pass) and `docker compose config` are the
