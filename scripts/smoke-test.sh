@@ -13,6 +13,12 @@
 # from the presence of Chromium. When omitted it is inferred from the image
 # tag (t3code:<variant>); digest references (image@sha256:...) require an
 # explicit --variant because the tag carries no variant.
+#
+# The pinned-versions-current assertion can be waived for rehearsals only, with
+# T3_SMOKE_ALLOW_OUTDATED_PINS=1: pin freshness is a source-hygiene check that
+# `versions` in build.yml reports separately, and it must not block a candidate
+# rehearsal for an unrelated upstream migration. The waiver is printed in the
+# output; the default stays strict.
 set -euo pipefail
 
 VARIANT=""
@@ -237,9 +243,15 @@ fi
 
 # A freshly built image that immediately asks you to upgrade an agent is a bug
 # in this repo, not in the agent. The pins are what go stale, so assert they
-# were current when the image was built.
-check "the pinned agent versions were current at build time" \
-  "./scripts/bump-versions.sh --check"
+# were current when the image was built. Rehearsals may waive this one check
+# (T3_SMOKE_ALLOW_OUTDATED_PINS=1) - see the header and ci-evidence.md - but the
+# release path never does.
+if [ "${T3_SMOKE_ALLOW_OUTDATED_PINS:-0}" = "1" ]; then
+  printf '  \033[33mWAIVED\033[0m the pinned versions were current at build time (T3_SMOKE_ALLOW_OUTDATED_PINS=1)\n'
+else
+  check "the pinned agent versions were current at build time" \
+    "./scripts/bump-versions.sh --check"
+fi
 
 printf '\nPairing\n'
 pair_out="$(docker exec "$NAME" t3-pair --no-qr 2>/dev/null || true)"

@@ -36,6 +36,21 @@ the effort's verification policy: both architectures are supported and
 published, amd64 is the evidence platform, and nothing is blocked on arm64
 hardware.
 
+### Pin Freshness In Rehearsals
+
+Smoke's final assertion is that the pins were current at build time. That is a
+source-hygiene check, not an artifact property, and `build.yml` reports drift
+informationally in `versions`. The candidate rehearsal waives it with
+`T3_SMOKE_ALLOW_OUTDATED_PINS=1` and records `pinFreshness: "waived"` in its
+evidence, while reporting the same drift informationally in the run summary.
+The release path in `build.yml` never sets the waiver, so an official tag still
+requires current pins.
+
+The waiver exists because T3 0.0.42 replaced the patchable npm bundle with a
+platform-specific binary distribution, which the immutable-infrastructure and
+setup-pill steps do not survive; see [Known Blocker](#known-blocker-t3-0042-binary-distribution).
+Rehearsals must not be blocked by a migration owned by another effort.
+
 ## Workflows
 
 ### `build.yml` - the official transitional path
@@ -152,6 +167,7 @@ Evidence record shape:
   "tested": true,
   "checks": ["infrastructure", "mise", "ownership", "runtime", "inventory", "smoke", "measure"],
   "size": [{ "compressed_bytes": 0, "unpacked_bytes": 0, "startup_seconds": 0.0 }],
+  "pinFreshness": "waived",
   "sourceSha": "...",
   "runUrl": "https://github.com/.../actions/runs/..."
 }
@@ -181,6 +197,25 @@ scripts/verify-promoted-manifest.sh \
 # A missing platform fails:
 scripts/verify-promoted-manifest.sh --platforms linux/amd64 ghcr.io/you/t3code:core-candidate
 ```
+
+## Known Blocker: T3 0.0.42 Binary Distribution
+
+Discovered while preparing this ticket's first rehearsal. T3 0.0.42 replaces the
+patchable npm bundle with a per-platform executable:
+
+- `t3@0.0.42` is a 1.5 KB launcher that resolves `@t3code/t3-<platform>-<arch>`;
+- `@t3code/t3-linux-x64@0.0.42` is a 64 MB tarball containing a 161 MB ELF
+  executable plus `client/` assets and native `node_modules`;
+- `/opt/t3/lib/node_modules/t3/dist/client/index.html` no longer exists, so
+  `docker/t3-client/patch.mjs` fails the build for every target.
+
+Migrating means reworking the immutable launch path (`node <entry>` becomes the
+binary), the setup-pill injection, and re-verifying the provider seams audited
+in [`provider-audit.md`](./provider-audit.md). That is an infrastructure
+migration, not a pin refresh, and it is not part of TM-11: the pins are
+refreshed for the harnesses and MCP servers, T3 stays at 0.0.40, and rehearsals
+waive the freshness assertion until the migration lands. The issue handoff
+records this as a follow-up for the map.
 
 ## Unavailable Checks
 

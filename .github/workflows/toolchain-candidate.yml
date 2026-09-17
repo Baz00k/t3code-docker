@@ -171,6 +171,12 @@ jobs:
     permissions:
       contents: read
       packages: read
+    env:
+      # Pin freshness is a source-hygiene check, reported separately below; the
+      # rehearsal waiver keeps promotion gated on artifact behaviour while the
+      # T3 binary-distribution migration is pending (see ci-evidence.md). The
+      # release path in build.yml never waives it.
+      T3_SMOKE_ALLOW_OUTDATED_PINS: "1"
     strategy:
       fail-fast: false
       matrix:
@@ -272,6 +278,20 @@ jobs:
         if: contains(matrix.checks, 'inventory')
         run: scripts/test-image-inventory.sh --variant "${{ matrix.target }}" "$IMAGE_REF"
 
+      # Keeps drift visible even though the smoke test below is allowed to
+      # proceed while the T3 migration is pending.
+      - name: Pinned versions (informational)
+        continue-on-error: true
+        run: |
+          ./scripts/bump-versions.sh --check | tee /tmp/versions.txt
+          {
+            echo "### Pinned versions: ${{ matrix.target }}"
+            echo
+            echo '```'
+            cat /tmp/versions.txt
+            echo '```'
+          } >> "$GITHUB_STEP_SUMMARY"
+
       - name: Smoke test (exact reference)
         if: contains(matrix.checks, 'smoke')
         run: scripts/smoke-test.sh --variant "${{ matrix.target }}" "$IMAGE_REF"
@@ -305,14 +325,16 @@ jobs:
           mkdir -p /tmp/evidence
           digest="$(jq -r .digest /tmp/build/build-*.json)"
           size="$(cat "/tmp/evidence/measure-${TARGET}.json" 2>/dev/null || echo null)"
+          if [ "${T3_SMOKE_ALLOW_OUTDATED_PINS:-0}" = "1" ]; then pin="waived"; else pin="asserted"; fi
           jq -cn \
             --arg target "$TARGET" --arg digest "$digest" --arg platform linux/amd64 \
             --arg ref "${REGISTRY}/${{ needs.prepare.outputs.image }}@${digest}" \
-            --arg checks "$CHECKS" --arg sourceSha "$GITHUB_SHA" \
+            --arg checks "$CHECKS" --arg sourceSha "$GITHUB_SHA" --arg pinFreshness "$pin" \
             --arg runUrl "${GITHUB_SERVER_URL}/${GITHUB_REPOSITORY}/actions/runs/${GITHUB_RUN_ID}" \
             --argjson size "$size" \
             '{target:$target, platform:$platform, digest:$digest, ref:$ref, tested:true,
-              checks: ($checks | split(",")), size:$size, sourceSha:$sourceSha, runUrl:$runUrl}' \
+              checks: ($checks | split(",")), size:$size, pinFreshness:$pinFreshness,
+              sourceSha:$sourceSha, runUrl:$runUrl}' \
             > "/tmp/evidence/tested-${TARGET}.json"
 
       - uses: actions/upload-artifact@v4
@@ -407,4 +429,3 @@ jobs:
           path: /tmp/evidence/candidate-evidence.json
           if-no-files-found: error
           retention-days: 14
-
