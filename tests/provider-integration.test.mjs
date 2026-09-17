@@ -372,4 +372,3 @@ test("the CLI resolves, reports exit codes, and syncs through the real file IO",
     rmSync(dir, { recursive: true, force: true });
   }
 });
-
