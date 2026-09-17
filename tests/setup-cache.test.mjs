@@ -317,3 +317,34 @@ test("status paths only read: no install, update, or mutation call exists", asyn
   assert.equal(world.mutations, 0);
   assert.ok(world.fullCalls + world.cheapCalls > 0, "reads happened");
 });
+
+test("invalidate refreshes now so the next poll cannot serve pre-write facts", async () => {
+  const { world, deps } = harnessWorld();
+  const cache = createHarnessCache(deps);
+  const first = await cache.snapshot();
+  assert.equal(first.source, "live");
+  assert.equal(world.fullCalls, 1);
+
+  // A credential write lands between the two polls. Without the invalidation
+  // the warm snapshot (refreshIntervalMs has not elapsed) would answer the
+  // second poll with the verdict from before the write.
+  await cache.invalidate();
+  assert.equal(world.fullCalls, 2, "invalidate refreshes instead of clearing only");
+
+  const second = await cache.snapshot();
+  assert.deepEqual(second.harnesses, first.harnesses);
+  assert.equal(second.stale, false);
+  assert.equal(world.fullCalls, 2, "the next poll reused the invalidated refresh");
+});
+
+test("invalidate is bounded: a stalled refresh leaves the next poll a cheap answer", async () => {
+  const { world, deps } = harnessWorld({ fullDelay: 300, cheapDelay: 5 });
+  const cache = createHarnessCache(deps);
+  await cache.invalidate();
+  const snap = await cache.snapshot();
+  assert.ok(["cheap", "cache", "live"].includes(snap.source), `got ${snap.source}`);
+  await sleep(350);
+  const later = await cache.snapshot();
+  assert.deepEqual(later.harnesses, [{ id: "claude", signedIn: true }]);
+  assert.equal(world.fullCalls, 1, "the stalled refresh landed in the background");
+});

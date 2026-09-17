@@ -179,6 +179,19 @@ const forgetSignInState = (id) => {
   } catch { /* a missing manager has nothing cached */ }
 };
 
+// The explicit credential writes (an API key, OpenCode's file) also drop the
+// server's warm harness snapshot and refresh it before answering, so the very
+// next poll cannot serve facts gathered before the credential existed. The
+// probe flush happens first, or the refresh could read its own stale verdict.
+// The refresh keeps the poll budget: if probes stall, it lands in the
+// background and the next poll picks it up.
+const refreshSignInState = async (id) => {
+  forgetSignInState(id);
+  try {
+    await harnessCache.invalidate();
+  } catch { /* the next poll still refreshes on its own */ }
+};
+
 // Last definite sign-in answer per agent. Five CLIs probed at once contend
 // for the box, and the slowest two - Claude and Cursor - can miss a deadline
 // even though each takes well under it alone. A missed deadline is not news
@@ -705,7 +718,7 @@ const setApiKey = async (agentId, key, providerId) => {
         code === 0 ? resolve() : reject(new Error(stripAnsi(out).trim().slice(-200) || "login failed")));
       child.stdin.end(`${key}\n`);
     });
-    forgetSignInState(agentId);
+    await refreshSignInState(agentId);
     return { ok: true };
   }
 
@@ -722,7 +735,7 @@ const setApiKey = async (agentId, key, providerId) => {
     try { current = JSON.parse(await readFile(`${dir}/auth.json`, "utf8")); } catch {}
     current[providerId] = { type: "api", key };
     await writeFile(`${dir}/auth.json`, JSON.stringify(current, null, 2), { mode: 0o600 });
-    forgetSignInState(agentId);
+    await refreshSignInState(agentId);
     return { ok: true };
   }
   throw new Error("unsupported");

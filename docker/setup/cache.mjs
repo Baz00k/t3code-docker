@@ -294,7 +294,20 @@ export function createHarnessCache({
     };
   };
 
+  /**
+   * Drop warm facts and refresh now. A credential write calls this so the next
+   * poll cannot serve a verdict reached before the write. The refresh gets the
+   * same budget as a poll; when the budget loses it keeps running in the
+   * background and the next poll picks it up.
+   */
+  const invalidate = async () => {
+    warm = null;
+    lastRefreshStart = 0;
+    const raced = await withTimeout(startRefresh(), budgetMs);
+    return raced.ok;
+  };
+
   const peek = () => warm;
 
-  return { snapshot, snapshotCheap, peek, get refreshing() { return coalescer.pending; } };
+  return { snapshot, snapshotCheap, invalidate, peek, get refreshing() { return coalescer.pending; } };
 }
