@@ -120,15 +120,42 @@ scripts/measure-image.sh slim full          # builds a missing target, then meas
 scripts/measure-image.sh --no-startup slim  # skip the first-healthy timing
 ```
 
-This additionally records the compressed size (`docker save | gzip`), the
-unpacked size (`.Size`), the image digest, and the time from `docker run` to the
-first `/.well-known/t3/environment` response. Startup timing is **not**
-available from the registry and must run on native hardware.
+This additionally records the compressed size (the gzipped `docker save`
+archive), the unpacked size (the sum of the uncompressed layer tars in that
+archive, which matches the registry `--unpacked` figure exactly), the image
+digest, and the time from `docker run` to the first
+`/.well-known/t3/environment` response. Startup timing is **not** available from
+the registry and must run on native hardware.
 
-**Outstanding:** no container runtime was available to the session that wrote
-this baseline, so the startup-time column and any local rebuild measurements are
-still awaiting native CI (or a local amd64/arm64 host). The registry numbers
-above are complete for both architectures.
+Measured on a native amd64 host, one sample per row:
+
+| Source | Target | Compressed | Unpacked | Startup |
+| --- | --- | ---: | ---: | ---: |
+| published `v0.4.5`, pulled | `slim` | 1.10 GiB (1,175,874,628 B) | 2.94 GiB (3,156,061,184 B) | 3.65 s |
+| published `v0.4.5`, pulled | `full` | 1.95 GiB (2,097,056,511 B) | 5.19 GiB (5,571,555,840 B) | 3.22 s |
+| rebuilt from source | `slim` | 1.10 GiB (1,181,793,153 B) | 2.98 GiB (3,197,304,320 B) | 3.24 s |
+| rebuilt from source | `full` | 1.97 GiB (2,112,396,698 B) | 5.25 GiB (5,639,725,056 B) | 3.23 s |
+
+All four rows were produced by the commands above (`--no-build` against the
+pulled `v0.4.5` tags for the first two). The local compressed figure is a
+fraction of a percent away from the registry per-layer sum because a local pull
+re-compresses the layers into the image store; the unpacked figures for the
+pulled rows are byte identical to the registry ones.
+
+Startup is variable: repeated runs on the same image span roughly 3.0-3.7 s, so
+treat "about 3-4 s to first healthy response" as the baseline rather than the
+last two digits. The script polls well below a second, because a 1 s sleep
+quantises the result and can make the same boot look a second slower.
+
+The source rebuild ran from the integration HEAD (`ee904d4`, identical
+`Dockerfile` to the `v0.4.5` base). It landed ~1.3% larger unpacked for `slim`
+and ~1.2% for `full`, which is the drift the floating inputs below describe. It
+is a fresh measurement of the current source, not a byte-identical reproduction
+of `v0.4.5`.
+
+**Outstanding:** arm64 startup timing still requires a native arm64 host or CI
+(`scripts/measure-image.sh slim full`, or a pulled `t3code/slim` tag with
+`--no-build`). The registry sizes above are complete for both architectures.
 
 ## Known Floating Inputs
 

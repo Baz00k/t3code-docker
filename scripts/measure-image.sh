@@ -87,7 +87,8 @@ done
 [ "${#TARGETS[@]}" -gt 0 ] || { usage >&2; exit 2; }
 
 RECORDS="$(mktemp)"
-trap 'rm -f "$RECORDS"' EXIT
+SAVE_TMP=""
+trap 'rm -f "$RECORDS" "$SAVE_TMP"' EXIT
 
 record() {
   printf '%s|%s|%s|%s|%s|%s|%s|%s|%s|%s|%s\n' "$@" >> "$RECORDS"
@@ -112,19 +113,42 @@ host_arch() {
 
 # --- local mode -------------------------------------------------------------
 
+# Uncompressed bytes of every layer in a `docker save` archive. The modern OCI
+# layout stores gzipped blobs under blobs/sha256/; the legacy layout stores an
+# already-uncompressed `<id>/layer.tar` per layer. `manifest.json` lists the
+# layers in order in both layouts.
+save_unpacked_bytes() {
+  local save="$1" ref="$2" layers layer total=0
+  layers="$(tar -xOf "$save" manifest.json \
+    | jq -r --arg ref "$ref" \
+        '([.[] | select((.RepoTags // []) | index($ref))][0] // .[0]).Layers[]')"
+  while IFS= read -r layer; do
+    [ -n "$layer" ] || continue
+    if [ "${layer##*.}" = tar ]; then
+      total=$((total + $(tar -xOf "$save" "$layer" | wc -c)))
+    else
+      total=$((total + $(tar -xOf "$save" "$layer" | gzip -dc 2>/dev/null | wc -c)))
+    fi
+  done <<< "$layers"
+  printf '%s' "$total"
+}
+
 measure_startup() {
-  local image="$1" name port start now alive
+  local image="$1" name port start now alive deadline
   name="measure-$$-$RANDOM"
   port="$(python3 -c 'import socket; s = socket.socket(); s.bind(("", 0)); print(s.getsockname()[1]); s.close()' 2>/dev/null || echo 13774)"
   start="$(date +%s.%N)"
   alive=""
+  deadline=$(( $(date +%s) + TIMEOUT ))
   "$RUNTIME" run -d --name "$name" -p "127.0.0.1:${port}:3773" "$image" >/dev/null
-  for _ in $(seq 1 "$TIMEOUT"); do
+  # Poll well below a second: a 1s sleep quantises the result and reports a
+  # boot a second or more slower than it is, depending on where the ticks land.
+  while [ "$(date +%s)" -lt "$deadline" ]; do
     if curl -fsS --noproxy '*' --max-time 2 \
         "http://127.0.0.1:${port}/.well-known/t3/environment" >/dev/null 2>&1; then
       now="$(date +%s.%N)"; alive=1; break
     fi
-    sleep 1
+    sleep 0.2
   done
   "$RUNTIME" rm -f "$name" >/dev/null 2>&1 || true
   [ -n "$alive" ] || { printf '%s' ""; return; }
@@ -132,7 +156,7 @@ measure_startup() {
 }
 
 measure_local() {
-  local target="$1" ref arch unpacked digest compressed startup
+  local target="$1" ref arch unpacked digest compressed startup save
   ref="${TAG_PREFIX}:${target}"
 
   if ! "$RUNTIME" image inspect "$ref" >/dev/null 2>&1; then
@@ -145,10 +169,14 @@ measure_local() {
   fi
 
   arch="$("$RUNTIME" image inspect --format '{{.Architecture}}' "$ref")"
-  unpacked="$("$RUNTIME" image inspect --format '{{.Size}}' "$ref")"
   digest="$("$RUNTIME" image inspect \
     --format '{{if .RepoDigests}}{{index .RepoDigests 0}}{{else}}{{.Id}}{{end}}' "$ref")"
-  compressed="$("$RUNTIME" save "$ref" | gzip -c | wc -c | tr -d ' ')"
+  save="$(mktemp)"
+  SAVE_TMP="$save"
+  "$RUNTIME" save "$ref" > "$save"
+  compressed="$(gzip -c "$save" | wc -c | tr -d ' ')"
+  unpacked="$(save_unpacked_bytes "$save" "$ref")"
+  rm -f "$save"; SAVE_TMP=""
   if [ "$STARTUP" -eq 1 ]; then
     startup="$(measure_startup "$ref")"
   else
