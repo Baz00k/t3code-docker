@@ -142,11 +142,52 @@ RUN mkdir -p /opt/npm-global && chown -R t3:t3 /opt/npm-global
 RUN printf 'prefix=/opt/npm-global\n' > /home/t3/.npmrc \
     && chown t3:t3 /home/t3/.npmrc
 
-# User-only tool environment (Go's GOPATH/bin today, mise and friends later).
-# Kept out of the image environment so root never has a user-controlled
-# directory on PATH.
+# User-only tool environment (Go's GOPATH/bin and mise's shims, set by
+# /etc/profile.d/t3-user-env.sh). Kept out of the image environment so root
+# never has a user-controlled directory on PATH.
 COPY docker/user-env.sh /etc/profile.d/t3-user-env.sh
 RUN chmod 0644 /etc/profile.d/t3-user-env.sh
+
+# mise - persistent, project-aware toolchains.
+#
+# Pinned to an exact release and verified against a committed checksum (both
+# architectures) before the binary is installed. mise itself is image
+# infrastructure: root-owned, not group/other writable, and launched by absolute
+# path. Everything it manages - installed tools, the global config, its cache -
+# lives in the unprivileged user's persistent home, so toolchains survive
+# recreation without widening root's environment. docker/mise/config.toml lands
+# at /etc/mise/config.toml: the lowest-precedence config every user and every
+# `docker exec` reads, carrying the execution policy and the generated
+# idiomatic allowlist. See docs/toolchain/project-execution.md.
+ARG MISE_VERSION=2026.9.10
+COPY docker/mise/ /opt/mise/
+RUN set -eux; \
+    case "$(dpkg --print-architecture)" in \
+      amd64) mise_arch=x64 ;; \
+      arm64) mise_arch=arm64 ;; \
+      *) echo "no mise build for $(dpkg --print-architecture)" >&2; exit 1 ;; \
+    esac; \
+    asset="mise-v${MISE_VERSION}-linux-${mise_arch}"; \
+    curl -fsSL -o /tmp/mise \
+      "https://github.com/jdx/mise/releases/download/v${MISE_VERSION}/${asset}"; \
+    checksum="$(awk -v asset="$asset" '$2 == asset { print $1 }' /opt/mise/SHA256SUMS)"; \
+    if [ -z "$checksum" ]; then \
+      echo "no checksum for ${asset} in docker/mise/SHA256SUMS" >&2; exit 1; \
+    fi; \
+    echo "${checksum}  /tmp/mise" | sha256sum -c -; \
+    install -m 0755 /tmp/mise /usr/local/bin/mise; \
+    rm -f /tmp/mise; \
+    install -D -m 0644 /opt/mise/config.toml /etc/mise/config.toml; \
+    mise --version; \
+    # The user-owned trees mise writes to, ready before the first tool install. A
+    # persistent volume mounted at /home/t3 hides these image defaults but keeps
+    # its own contents; mise recreates whatever it needs.
+    mkdir -p \
+      /home/t3/.config/mise \
+      /home/t3/.local/share/mise \
+      /home/t3/.local/state/mise \
+      /home/t3/.cache/mise; \
+    chown -R t3:t3 /home/t3/.config /home/t3/.local /home/t3/.cache
 
 # ---------------------------------------------------------------------------
 # slim - T3 Code and the harnesses

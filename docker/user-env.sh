@@ -21,4 +21,34 @@ if [ "$(id -u)" != "0" ]; then
     *":${GOPATH}/bin:"*) ;;
     *) PATH="${GOPATH}/bin:${PATH}"; export PATH ;;
   esac
+
+  # mise: persistent user toolchains. The binary is image infrastructure at
+  # /usr/local/bin/mise; config, data, state and cache live in the persistent
+  # home so installed tools survive container recreation. The paths are
+  # explicit rather than left to mise's XDG defaults so they do not move when a
+  # user sets XDG_* variables, and so they match what the image documents. They
+  # are exported only here: root's HOME and PATH must stay free of
+  # user-controlled directories.
+  : "${MISE_CONFIG_DIR:=/home/t3/.config/mise}"
+  : "${MISE_DATA_DIR:=/home/t3/.local/share/mise}"
+  : "${MISE_STATE_DIR:=/home/t3/.local/state/mise}"
+  : "${MISE_CACHE_DIR:=/home/t3/.cache/mise}"
+  export MISE_CONFIG_DIR MISE_DATA_DIR MISE_STATE_DIR MISE_CACHE_DIR
+
+  # The shims directory is what makes tool resolution project-aware in every
+  # shell the user reaches - a login terminal, an interactive one, or a child
+  # process of the server - without needing mise to be activated first.
+  case ":$PATH:" in
+    *":${MISE_DATA_DIR}/shims:"*) ;;
+    *) PATH="${MISE_DATA_DIR}/shims:${PATH}"; export PATH ;;
+  esac
+
+  # Interactive bash also gets mise's full activation, which keeps the tool
+  # environment current when the shell changes directory. Non-interactive
+  # contexts and explicit `mise exec` do not need it.
+  if [ -n "${BASH_VERSION:-}" ]; then
+    case $- in
+      *i*) eval "$(/usr/local/bin/mise activate bash)" ;;
+    esac
+  fi
 fi

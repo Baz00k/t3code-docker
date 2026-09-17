@@ -1,0 +1,4 @@
+# Declares a tool that is not installed anywhere in the image. `mise exec` must
+# install it (auto_install = true) rather than fail or fall back.
+[tools]
+shfmt = "3.14.1"

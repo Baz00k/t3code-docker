@@ -1,0 +1,4 @@
+# Detector override fixture: .nvmrc is allowed system-wide, but this project
+# disables just that file for Node. The idiomatic detector must not read it.
+[settings]
+idiomatic_version_file_disable_files = ["node:.nvmrc"]

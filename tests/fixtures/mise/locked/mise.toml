@@ -1,0 +1,14 @@
+# Dual-architecture locked project fixture for scripts/test-mise.sh.
+#
+# mise.lock pins concrete versions and per-platform artifact checksums for
+# linux-x64 and linux-arm64, so `mise install --locked` installs the same tools
+# on both architectures and a reused home keeps working with no network.
+[settings]
+lockfile = true
+
+[tools]
+jq = "1.8.2"
+shellcheck = "0.11.0"
+
+[tasks.versions]
+run = "jq --version && shellcheck --version | sed -n '2p'"
