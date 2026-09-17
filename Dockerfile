@@ -205,7 +205,7 @@ FROM base AS slim
 # Pinned so a rebuild is reproducible; `scripts/bump-versions.sh` refreshes them
 # against the registries, and CI opens a PR when one falls behind. Any of these
 # also accepts `latest` as a build arg when you want the newest at build time.
-ARG T3_VERSION=0.0.42
+ARG T3_VERSION=0.0.40
 ARG CLAUDE_CODE_VERSION=2.1.274
 ARG CODEX_VERSION=0.154.0
 ARG OPENCODE_VERSION=1.18.31
@@ -446,7 +446,7 @@ RUN set -eux; \
 # every `ARG T3_VERSION=` line in this file, so slim and core stay in sync.
 # Baked harness pins (CLAUDE/CODEX/OPENCODE/GROK) intentionally do not appear
 # here: core ships the installer, never the executables.
-ARG T3_VERSION=0.0.42
+ARG T3_VERSION=0.0.40
 
 # T3 Code is image infrastructure. Identical to slim: root-owned prefix,
 # launched only through absolute paths.
