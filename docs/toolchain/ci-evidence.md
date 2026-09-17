@@ -211,6 +211,39 @@ scripts/verify-promoted-manifest.sh \
 scripts/verify-promoted-manifest.sh --platforms linux/amd64 ghcr.io/you/t3code:core-candidate
 ```
 
+## Current Evidence
+
+Final rehearsal, 2026-09-17, source `2fec568`
+(run [35256458619](https://github.com/Baz00k/t3code-docker/actions/runs/35256458619)):
+all four targets built for amd64 and arm64, all four native amd64 test jobs
+passed, and all four candidate manifests were promoted and member-verified
+inside the run. `scripts/verify-promoted-manifest.sh` was re-run from a checkout
+against the same tags and passed independently. Candidate tags get overwritten
+by later rehearsals; the digests below are the record.
+
+| Target | amd64 member (tested) | arm64 member (built) | Promoted index digest |
+| --- | --- | --- | --- |
+| `slim` | `sha256:3a2ac5c41daa64d3d388b0bdd378ce3960bac1f7f44bd692fe34e8d939134599` | `sha256:87b251626dfa00338ff52161f4d6692bab22073a5a7e099329e318c32f8d4c5a` | `sha256:d3323ebe43eedb1670b6a21558f736e25e25f913adb5d58f9cf7fdbc60dd6b67` |
+| `full` | `sha256:74f7109e6aa45ad24dc589a32dc16619300e165d7b435e4b04123b93d7b93d67` | `sha256:1ec6a15f85e0fb94b6679f4722a90e4d3eecf2c09d289632038d127e99f5e332` | `sha256:9ae6fad2dedb85cfd0f56692c8934a5feecaccbf9caed35de86f66c761e6b855` |
+| `core` | `sha256:3461c61cee24ceebf5947c332deb8068b4231a05a2693a60880da4f497b2cd59` | `sha256:6c9d957c4bd9d1219b565a2a63a9704114b1fa30357c91e36ab8d422a0aa8289` | `sha256:736b714b5768f7a669e3bd73a2a791313ad1c7bc35c8819d0e32de6b9eaf9a8c` |
+| `browser` | `sha256:cf1f277702111d95f3b0ae805f8fd17aaf9ba137d3992f155bd76fcd700710c3` | `sha256:42310feb4bfba30a521e470c25c1d33b5fc421ed1d7554897eb6a9d9102ed8fa` | `sha256:3221a20b2b8ebf34487bd0af987c08c8c18394e2e9a77508569e55c3134acf06` |
+
+Measured from the pulled amd64 digests (startup is the first healthy response):
+
+| Target | Compressed | Unpacked | Startup | Checks |
+| --- | ---: | ---: | ---: | --- |
+| `slim` | 1.14 GiB | 3.17 GiB | 3.64 s | infrastructure, mise, ownership, harness, offline, inventory, smoke, measure |
+| `full` | 1.99 GiB | 5.44 GiB | 3.40 s | infrastructure, mise, ownership, harness, offline, inventory, smoke, measure |
+| `core` | 0.69 GiB | 2.03 GiB | 3.64 s | infrastructure, mise, ownership, offline, runtime, inventory, smoke, measure |
+| `browser` | 0.97 GiB | 2.63 GiB | 3.65 s | infrastructure, mise, ownership, offline, runtime, inventory, smoke, measure |
+
+Failing-candidate rehearsal, 2026-09-17
+(run [35256467044](https://github.com/Baz00k/t3code-docker/actions/runs/35256467044),
+scratch branch `tm/11-failure-rehearsal` at `de6aadf`): `core` built for both architectures,
+the amd64 smoke step failed on the injected defect, `promote` was skipped
+because a test job failed, and the run produced build evidence only - no
+`candidate-tested-core`, no `candidate-evidence`, no candidate manifest.
+
 ## Known Blocker: T3 0.0.42 Binary Distribution
 
 Discovered while preparing this ticket's first rehearsal. T3 0.0.42 replaces the
