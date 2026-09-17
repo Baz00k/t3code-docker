@@ -1,8 +1,12 @@
 #!/usr/bin/env bash
 # Build the image. Defaults to the `full` target for the local platform.
+# Transitional default: `full` stays the default until TM-13 performs the
+# atomic product switch (core becomes the default, slim/full stop updating).
 #
 #   scripts/build.sh                       # t3code:full
 #   scripts/build.sh --target slim         # t3code:slim
+#   scripts/build.sh --target core         # t3code:core
+#   scripts/build.sh --target browser      # t3code:browser
 #   scripts/build.sh --platform linux/amd64,linux/arm64 --push --tag ghcr.io/you/t3code
 set -euo pipefail
 
@@ -18,10 +22,16 @@ usage() {
   cat <<'USAGE'
 Usage: scripts/build.sh [options] [-- extra docker build args]
 
-  --target NAME     slim | full            (default: full)
+  --target NAME     slim | full | core | browser   (default: full)
   --tag NAME        image tag              (default: t3code:<target>)
   --platform LIST   e.g. linux/amd64,linux/arm64 (implies buildx)
   --push            push instead of loading locally
+
+  Capability profiles (see docs/toolchain/image-contract.md):
+    slim     transitional, baked harnesses, no toolchains, no browser
+    full     transitional, baked harnesses + toolchains + browser
+    core     final, no baked harnesses/runtimes, non-browser OS packages + mise
+    browser  final, core + Chromium/fonts/MCP servers
 
 Behind a TLS-intercepting proxy, drop the CA in ca-certs/ and add:
   --  --network host --build-arg APT_HTTPS=true \
@@ -41,7 +51,7 @@ while [ $# -gt 0 ]; do
   esac
 done
 
-case "$target" in slim|full) ;; *) echo "build.sh: target must be slim or full" >&2; exit 2 ;; esac
+case "$target" in slim|full|core|browser) ;; *) echo "build.sh: target must be slim, full, core, or browser" >&2; exit 2 ;; esac
 [ -n "$tag" ] || tag="t3code:${target}"
 
 args=(build --target "$target" -t "$tag")

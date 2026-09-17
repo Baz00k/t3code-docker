@@ -2,13 +2,21 @@
 
 # T3 Code, packaged as a headless server.
 #
-# Two targets:
-#   slim  - T3 Code + the agent harnesses + git/python. Enough to drive a repo.
-#   full  - slim + Go/Rust/C++/Bun/Deno toolchains, ffmpeg, and a headless
-#           Chromium with browser-automation MCP servers. The default.
+# Four targets (two transitional, two final):
+#   slim    - TRANSITIONAL. T3 Code + baked agent harnesses + git/python.
+#             Enough to drive a repo. Historical artifacts remain, but the tag
+#             stops receiving updates after the product switch.
+#   full    - TRANSITIONAL. slim + baked Go/Rust/C++/Bun/Deno toolchains,
+#             ffmpeg, and a headless Chromium with browser-automation MCP
+#             servers. The current default.
+#   core    - FINAL. Base + full non-browser OS packages, image infrastructure,
+#             mise, and the harness installer. No baked harness executables, no
+#             baked language runtimes (Go/Rust/Bun/Deno/uv via mise), no browser.
+#   browser - FINAL. core + Chromium, fonts, and both MCP servers.
 #
-# Build:  docker build --target full -t t3code:full .
-# See README.md for the runtime contract.
+# Build:  docker build --target browser -t t3code:browser .
+# See README.md for the runtime contract and docs/toolchain/image-contract.md
+# for the authoritative target profiles.
 
 ARG NODE_IMAGE=node:24-trixie-slim
 
@@ -404,6 +412,159 @@ RUN mkdir -p /home/t3/go && chown -R t3:t3 /home/t3
 # you can tell at a glance which image is actually running.
 ARG IMAGE_VERSION=dev
 ARG IMAGE_VARIANT=full
+ENV T3_IMAGE_VERSION=${IMAGE_VERSION} \
+    T3_IMAGE_VARIANT=${IMAGE_VARIANT}
+LABEL org.opencontainers.image.version="${IMAGE_VERSION}"
+
+# ---------------------------------------------------------------------------
+# core - the final default: base + full non-browser OS packages, T3 infra,
+# mise (from base), and the harness installer. No baked harness executables,
+# no baked language runtimes, no browser.
+#
+# Transitional slim/full are preserved above unchanged. core duplicates slim's
+# T3/entrypoint wiring (minus baked harnesses) and full's non-browser apt set
+# so the old targets stay byte-identical in behavior while the new chain can
+# evolve independently. TM-13 removes slim/full and deduplicates.
+# ---------------------------------------------------------------------------
+FROM base AS core
+
+USER root
+
+# The non-browser union: everything full installs via apt except Chromium,
+# fonts, and (implicitly) the baked toolchains below it. Keep this list in
+# sync with full's non-browser subset; browser-only packages live in the
+# browser stage.
+RUN set -eux; \
+    apt-get -o Acquire::Retries=8 update; \
+    apt-get install -y --no-install-recommends \
+        clang lld cmake pkg-config gdb \
+        ffmpeg imagemagick \
+        postgresql-client redis-tools; \
+    rm -rf /var/lib/apt/lists/*
+
+# Pinned so a rebuild is reproducible; `scripts/bump-versions.sh` refreshes
+# every `ARG T3_VERSION=` line in this file, so slim and core stay in sync.
+# Baked harness pins (CLAUDE/CODEX/OPENCODE/GROK) intentionally do not appear
+# here: core ships the installer, never the executables.
+ARG T3_VERSION=0.0.40
+
+# T3 Code is image infrastructure. Identical to slim: root-owned prefix,
+# launched only through absolute paths.
+ENV T3_INFRA_PREFIX=/opt/t3 \
+    T3_INFRA_NODE=/usr/local/bin/node \
+    T3_INFRA_LAUNCHER=/usr/local/bin/t3-admin
+
+# node-pty has no Linux prebuilds and compiles here; build-essential and
+# python3 (in base above) are what make that work.
+RUN set -eux; \
+    mkdir -p "$T3_INFRA_PREFIX"; \
+    npm install -g --no-audit --no-fund --prefix "$T3_INFRA_PREFIX" \
+        "t3@${T3_VERSION}"; \
+    npm cache clean --force; \
+    # Source maps are dead weight here (~140 MB across the image).
+    find "$T3_INFRA_PREFIX" -type f -name '*.map' -delete; \
+    # Root-owned and not group/other writable: the t3 user runs the server and
+    # must never be able to modify it.
+    chown -R root:root "$T3_INFRA_PREFIX"; \
+    chmod -R go-w "$T3_INFRA_PREFIX"
+
+# No baked harnesses, no Cursor installer. The harness installer (manager +
+# provider integration + t3-harness CLI) arrives with the COPYs below and
+# installs mise-managed executables into the persistent home at runtime.
+
+COPY docker/entrypoint.sh /usr/local/bin/entrypoint.sh
+COPY docker/bin/ /usr/local/bin/
+# Plain ESM modules shared by the setup service, the entrypoint and the shell
+# helpers: the harness manager owns install/resolve, and the provider
+# integration turns its selection into T3's per-provider `binaryPath`.
+COPY docker/harness/ /opt/t3-harness/
+COPY docker/provider-integration/ /opt/t3-provider/
+COPY docker/setup/ /opt/t3-setup/
+COPY examples/ /opt/examples/
+# T3 Code's client has no link to the setup console, so a fresh install that
+# lands on the pairing screen has nowhere to go. The pill is injected into the
+# static shell - it probes for the console and hides itself when absent - and
+# patch.mjs fails the build if upstream moves the layout it relies on.
+COPY docker/t3-client/ /usr/local/share/t3-client/
+RUN "$T3_INFRA_NODE" /usr/local/share/t3-client/patch.mjs
+# `t3` is the same immutable launcher under its user-facing name. /usr/local/bin
+# precedes the npm prefixes on PATH, so it always wins over a project shim.
+RUN chmod +x /usr/local/bin/entrypoint.sh /usr/local/bin/t3-* \
+    && ln -sfn t3-admin /usr/local/bin/t3
+
+ENV T3CODE_HOME=/home/t3/.t3 \
+    T3CODE_HOST=0.0.0.0 \
+    T3CODE_PORT=3773 \
+    T3_WORKSPACE=/workspace \
+    T3_AUTO_ADD_PROJECTS=1 \
+    T3_PRINT_PAIRING_ON_START=0 \
+    T3_SETUP_ENABLED=1 \
+    T3_SETUP_PORT=3774 \
+    T3_SETUP_BASE_PATH= \
+    PUID=1000 \
+    PGID=1000
+
+RUN mkdir -p /workspace /home/t3/.t3 /home/t3/go && chown -R t3:t3 /workspace /home/t3
+
+VOLUME ["/home/t3", "/workspace"]
+WORKDIR /workspace
+EXPOSE 3773 3774
+
+HEALTHCHECK --interval=30s --timeout=5s --start-period=90s --retries=3 \
+    CMD curl -fsS --max-time 4 "http://127.0.0.1:${T3CODE_PORT}/.well-known/t3/environment" >/dev/null || exit 1
+
+# Stamped last so a version change reuses every layer above it. IMAGE_VERSION is
+# the release tag in CI and "dev" for a local build; the setup page shows both so
+# you can tell at a glance which image is actually running.
+ARG IMAGE_VERSION=dev
+ARG IMAGE_VARIANT=core
+ENV T3_IMAGE_VERSION=${IMAGE_VERSION} \
+    T3_IMAGE_VARIANT=${IMAGE_VARIANT}
+LABEL org.opencontainers.image.version="${IMAGE_VERSION}"
+
+ENTRYPOINT ["/usr/bin/tini", "--", "/usr/local/bin/entrypoint.sh"]
+CMD ["t3-serve"]
+
+# ---------------------------------------------------------------------------
+# browser - core + Chromium, fonts, and both MCP servers. No baked harnesses,
+# no baked language runtimes.
+# ---------------------------------------------------------------------------
+FROM core AS browser
+
+USER root
+
+RUN set -eux; \
+    apt-get -o Acquire::Retries=8 update; \
+    apt-get install -y --no-install-recommends \
+        chromium \
+        fonts-liberation fonts-dejavu-core fonts-noto-core \
+        fonts-noto-color-emoji fonts-noto-cjk; \
+    rm -rf /var/lib/apt/lists/*
+
+# Browser automation over MCP. Identical to full: T3 Code's own preview tools
+# are hosted by the web/desktop client, so a phone-only setup has no eyes
+# without this. `scripts/bump-versions.sh` keeps both full and browser pins in
+# sync.
+ARG CHROME_DEVTOOLS_MCP_VERSION=1.9.0
+ARG PLAYWRIGHT_MCP_VERSION=0.0.80
+ENV CHROME_PATH=/usr/bin/chromium \
+    CHROME_BIN=/usr/bin/chromium \
+    PUPPETEER_SKIP_DOWNLOAD=1 \
+    PUPPETEER_EXECUTABLE_PATH=/usr/bin/chromium \
+    PLAYWRIGHT_SKIP_BROWSER_DOWNLOAD=1 \
+    PLAYWRIGHT_CHROMIUM_EXECUTABLE_PATH=/usr/bin/chromium
+RUN set -eux; \
+    npm install -g --no-audit --no-fund --prefix /opt/npm-global \
+        "chrome-devtools-mcp@${CHROME_DEVTOOLS_MCP_VERSION}" \
+        "@playwright/mcp@${PLAYWRIGHT_MCP_VERSION}"; \
+    npm cache clean --force; \
+    chown -R t3:t3 /opt/npm-global
+
+# Stamped last so a version change reuses every layer above it. IMAGE_VERSION is
+# the release tag in CI and "dev" for a local build; the setup page shows both so
+# you can tell at a glance which image is actually running.
+ARG IMAGE_VERSION=dev
+ARG IMAGE_VARIANT=browser
 ENV T3_IMAGE_VERSION=${IMAGE_VERSION} \
     T3_IMAGE_VARIANT=${IMAGE_VARIANT}
 LABEL org.opencontainers.image.version="${IMAGE_VERSION}"
