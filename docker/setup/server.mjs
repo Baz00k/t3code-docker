@@ -14,6 +14,11 @@ import { execFile } from "node:child_process";
 import { timingSafeEqual, randomBytes } from "node:crypto";
 import { promisify } from "node:util";
 import { readFileSync, writeFileSync, existsSync } from "node:fs";
+import {
+  withTimeout,
+  createProviderCache,
+  createHarnessCache,
+} from "./cache.mjs";
 
 const run = promisify(execFile);
 
@@ -221,12 +226,57 @@ const toPublicHarness = (facts) => ({
   keyKind: AGENTS[facts.id]?.apiKey?.kind ?? null,
 });
 
+// --- offline-safe status ------------------------------------------------------
+//
+// `/status` and `/providers` stay responsive under `--network none` (TM-09):
+// every sub-read is local or bounded, provider data is served from bundled or
+// cached state with an asynchronous refresh, and harness auth facts come from
+// a coalesced refresh with a cheap local fallback. Nothing on these paths
+// installs or updates: the manager reads are `status()` with
+// `MISE_AUTO_INSTALL=false`, and the provider path only reads a file or
+// fetches a catalogue. See docs/toolchain/offline.md for the contract.
+
+// One authenticated refresh at a time, shared by concurrent polls; the cheap
+// local read (`authenticate: false`: one `mise ls` plus filesystem checks)
+// answers immediately when the budget loses. Authenticated probes can stall
+// offline on remote API checks even though each is bounded, so the per-snapshot
+// budget - not the probe timeout - is what keeps the endpoint within its five
+// seconds.
+const HARNESS_BUDGET_MS = 4000;
+const T3_LIST_BUDGET_MS = 4000;
+
+const harnessCache = createHarnessCache({
+  full: async () => {
+    const harness = await loadHarness();
+    const { harnesses, degraded } = await harness.status({});
+    return { harnesses: harnesses.map(toPublicHarness), degraded };
+  },
+  cheap: async () => {
+    const harness = await loadHarness();
+    const { harnesses, degraded } = await harness.status({ authenticate: false });
+    return { harnesses: harnesses.map(toPublicHarness), degraded };
+  },
+  budgetMs: HARNESS_BUDGET_MS,
+});
+
+/** Authenticated snapshot for /status and /harnesses; explicit cheap polls
+ * skip the auth refresh and answer from local state only. Returns the public
+ * card rows plus the freshness of the answer (see docs/toolchain/offline.md).
+ */
+const harnessLifecycleStatus = async (authenticate = true) => {
+  const snap = authenticate === false
+    ? await harnessCache.snapshotCheap()
+    : await harnessCache.snapshot();
+  return {
+    harnesses: snap.harnesses,
+    degraded: snap.degraded,
+    cache: { at: snap.at, stale: snap.stale, source: snap.source, refreshing: snap.refreshing },
+  };
+};
+
 const harnessStatus = async (options = {}) => {
-  const harness = await loadHarness();
-  const { harnesses } = await harness.status(
-    options.authenticate === false ? { authenticate: false } : {},
-  );
-  return harnesses.map(toPublicHarness);
+  const snap = await harnessLifecycleStatus(options.authenticate !== false);
+  return snap.harnesses;
 };
 
 // The absolute managed executable when one is runnable, else the baked
@@ -280,40 +330,42 @@ const PROVIDER_FALLBACK = [
 
 const PROVIDER_CACHE = `${process.env.T3CODE_HOME || `${process.env.HOME}/.t3`}/setup/providers.json`;
 const PROVIDER_TTL_MS = 24 * 60 * 60 * 1000;
-let providerMemo = null;
+// The network fetch never blocks a response: it runs only as a background
+// refresh behind `snapshot()`. Twelve seconds is generous for a slow edge
+// precisely because no request waits on it.
+const PROVIDER_FETCH_TIMEOUT_MS = 12_000;
 
-const providers = async () => {
-  if (providerMemo) return providerMemo;
-  const { readFile, writeFile, mkdir } = await import("node:fs/promises");
-  try {
-    const cached = JSON.parse(await readFile(PROVIDER_CACHE, "utf8"));
-    if (Array.isArray(cached.list) && Date.now() - cached.at < PROVIDER_TTL_MS) {
-      providerMemo = cached.list;
-      return providerMemo;
-    }
-  } catch { /* no usable cache; fetch */ }
-  try {
-    const res = await fetch("https://models.dev/api.json", { signal: AbortSignal.timeout(12000) });
-    if (!res.ok) throw new Error(`HTTP ${res.status}`);
-    const list = Object.entries(await res.json())
-      .map(([id, p]) => ({ id, name: typeof p?.name === "string" && p.name ? p.name : id }))
-      .sort((a, b) => a.name.localeCompare(b.name));
-    if (list.length === 0) throw new Error("empty catalog");
-    providerMemo = list;
-    try {
-      await mkdir(PROVIDER_CACHE.replace(/\/[^/]+$/, ""), { recursive: true });
-      await writeFile(PROVIDER_CACHE, JSON.stringify({ at: Date.now(), list }));
-    } catch { /* the cache is an optimisation, not a requirement */ }
-    return providerMemo;
-  } catch {
-    // Serve a stale cache before the built-in list: it is the real catalog.
-    try {
-      const cached = JSON.parse(await readFile(PROVIDER_CACHE, "utf8"));
-      if (Array.isArray(cached.list) && cached.list.length) return (providerMemo = cached.list);
-    } catch { /* fall through */ }
-    return PROVIDER_FALLBACK;
-  }
+const fetchProviderCatalog = async () => {
+  const res = await fetch("https://models.dev/api.json", { signal: AbortSignal.timeout(PROVIDER_FETCH_TIMEOUT_MS) });
+  if (!res.ok) throw new Error(`HTTP ${res.status}`);
+  return Object.entries(await res.json())
+    .map(([id, p]) => ({ id, name: typeof p?.name === "string" && p.name ? p.name : id }))
+    .sort((a, b) => a.name.localeCompare(b.name));
 };
+
+// Serve the catalogue immediately from memory, the disk cache, or the bundled
+// fallback, and refresh asynchronously: under `--network none` this answers
+// in milliseconds instead of waiting out the fetch timeout (TM-09). The disk
+// read and the fetch are the only I/O here; polling never installs anything.
+const providerCache = createProviderCache({
+  readFile: async () => {
+    const { readFile } = await import("node:fs/promises");
+    return readFile(PROVIDER_CACHE, "utf8");
+  },
+  writeFile: async (data) => {
+    const { writeFile } = await import("node:fs/promises");
+    return writeFile(PROVIDER_CACHE, data);
+  },
+  mkdir: async () => {
+    const { mkdir } = await import("node:fs/promises");
+    return mkdir(PROVIDER_CACHE.replace(/\/[^/]+$/, ""), { recursive: true });
+  },
+  fetchList: fetchProviderCatalog,
+  fallback: PROVIDER_FALLBACK,
+  ttlMs: PROVIDER_TTL_MS,
+});
+
+const providersSnapshot = () => providerCache.snapshot();
 
 /** Which providers already hold a key, so the picker can say so. */
 const configuredProviders = async () => {
@@ -330,6 +382,10 @@ const status = async () => {
   // Concurrently, and each failure contained: an empty list and "could not
   // read" are different facts, and reporting the first when the second is true
   // is how a console tells you a comfortable lie. Whatever answers, answers.
+  // Every leg is bounded so the whole stays inside the five-second offline
+  // budget: health is localhost, the harness snapshot races its authenticated
+  // refresh against a local fallback, and the `t3 auth` lists are local
+  // SQLite reads with a backstop for a locked database.
   const degraded = [];
   const attempt = async (what, work, fallback) => {
     try {
@@ -339,14 +395,23 @@ const status = async () => {
       return fallback;
     }
   };
-  const [server, harnessResult, pairings, sessions] = await Promise.all([
+  const attemptTimed = async (what, work, ms, fallback) => {
+    const raced = await withTimeout(Promise.resolve().then(work), ms);
+    if (raced.ok) return raced.value;
+    degraded.push({ what, error: String(raced.error ?? "unavailable").slice(0, 200) });
+    return fallback;
+  };
+  const [server, harnessSnap, pairings, sessions] = await Promise.all([
     attempt("server health", health, { ok: false, detail: "health check failed" }),
-    attempt("agent probes", () => harnessLifecycleStatus(true), { harnesses: [], degraded: [] }),
-    attempt("pairing links", () => listJson(["auth", "pairing", "list", "--json"]), []),
-    attempt("paired devices", () => listJson(["auth", "session", "list", "--json"]), []),
+    attempt("agent probes", () => harnessLifecycleStatus(true), {
+      harnesses: [], degraded: [],
+      cache: { at: null, stale: true, source: "unavailable", refreshing: false },
+    }),
+    attemptTimed("pairing links", () => listJson(["auth", "pairing", "list", "--json"]), T3_LIST_BUDGET_MS, []),
+    attemptTimed("paired devices", () => listJson(["auth", "session", "list", "--json"]), T3_LIST_BUDGET_MS, []),
   ]);
-  const harnesses = harnessResult?.harnesses ?? [];
-  for (const entry of harnessResult?.degraded ?? []) {
+  const harnesses = harnessSnap?.harnesses ?? [];
+  for (const entry of harnessSnap?.degraded ?? []) {
     degraded.push({ what: `harness ${entry.what}`, error: String(entry.error ?? "").slice(0, 200) });
   }
 
@@ -368,6 +433,17 @@ const status = async () => {
       pairTtl: process.env.T3_PAIR_TTL || "30d",
     },
     harnesses,
+    // Freshness of the harness facts above: `live` completed on this request,
+    // `cache`/`cheap` are local or last-known state served because the
+    // authenticated refresh exceeded its budget (it keeps running and warms
+    // the next poll). A stale `signedIn` is the last definite verdict, never
+    // a fresh claim - see docs/toolchain/offline.md.
+    harnessCache: {
+      at: harnessSnap?.cache?.at ?? null,
+      stale: harnessSnap?.cache?.stale ?? true,
+      source: harnessSnap?.cache?.source ?? "unavailable",
+      refreshing: harnessSnap?.cache?.refreshing ?? false,
+    },
     pairings,
     sessions,
     degraded,
@@ -1006,14 +1082,10 @@ const portsStatus = async () => ({
 // Long operations outlive HTTP requests: mise installs take minutes, so the
 // UI polls GET /harnesses (or /status) for `inProgress`/`operationState`
 // rather than holding one request. Auth status is never inferred from install
-// success; it stays whatever the bounded probe reports.
-const harnessLifecycleStatus = async (authenticate = true) => {
-  const harness = await loadHarness();
-  const { harnesses, degraded } = await harness.status(
-    authenticate === false ? { authenticate: false } : {},
-  );
-  return { harnesses: harnesses.map(toPublicHarness), degraded };
-};
+// success; it stays whatever the bounded probe reports. Under `--network
+// none` the authenticated read races its budget and falls back to cached or
+// cheap local facts (see the offline-safe status block above and
+// docs/toolchain/offline.md).
 
 const runLifecycle = async (kind, input) => {
   const rawId = input?.id ?? input?.agent ?? "";
@@ -1140,13 +1212,14 @@ const server = createServer(async (req, res) => {
         const only = (url.searchParams.get("id") ?? "").trim();
         const authenticate = url.searchParams.get("authenticate") !== "false"
           && url.searchParams.get("authenticate") !== "0";
-        const { harnesses, degraded } = await harnessLifecycleStatus(authenticate);
+        const snap = await harnessLifecycleStatus(authenticate);
+        const cache = snap.cache;
         if (only) {
-          const found = harnesses.find((h) => h.id === only);
+          const found = snap.harnesses.find((h) => h.id === only);
           if (!found) return sendJson(res, 404, { ok: false, code: "unknown-harness", error: `unknown harness: ${only}` });
-          return sendJson(res, 200, { harness: found, degraded });
+          return sendJson(res, 200, { harness: found, degraded: snap.degraded, harnessCache: cache });
         }
-        return sendJson(res, 200, { harnesses, degraded });
+        return sendJson(res, 200, { harnesses: snap.harnesses, degraded: snap.degraded, harnessCache: cache });
       } catch (error) {
         return sendJson(res, 500, { error: String(error?.message ?? error) });
       }
@@ -1185,9 +1258,11 @@ const server = createServer(async (req, res) => {
 
 
     if (req.method === "GET" && route === "/providers") {
+      const snap = await providersSnapshot();
       return sendJson(res, 200, {
-        providers: await providers(),
+        providers: snap.list,
         configured: await configuredProviders(),
+        cache: { at: snap.at, stale: snap.stale, source: snap.source, refreshing: snap.refreshing },
       });
     }
     if (req.method === "POST" && route === "/auth/apikey") {
