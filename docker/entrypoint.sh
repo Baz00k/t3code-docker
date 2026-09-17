@@ -27,22 +27,41 @@ T3_HOME=/home/t3
 export T3CODE_HOME T3CODE_HOST T3CODE_PORT T3_WORKSPACE T3_SETUP_PORT
 export T3_INFRA_NODE T3_INFRA_LAUNCHER
 
+# Ownership migration is recorded here before anything else changes. The state
+# directory is the one path every deployment mounts, so a marker written there
+# survives the restart or recreate that must finish the migration. See
+# docs/toolchain/persistence.md for the format and recovery semantics.
+OWNERSHIP_MARKER="${T3CODE_HOME}/.ownership-migration"
+
+write_ownership_marker() {
+  local tmp="${OWNERSHIP_MARKER}.tmp"
+  {
+    printf 'version=1\n'
+    printf 'target_uid=%s\n' "$PUID"
+    printf 'target_gid=%s\n' "$PGID"
+    printf 'started=%s\n' "$(date -u +%Y-%m-%dT%H:%M:%SZ)"
+  } > "$tmp"
+  chmod 0644 "$tmp"
+  mv -f "$tmp" "$OWNERSHIP_MARKER"
+  log "recorded ownership migration intent (${OWNERSHIP_MARKER})"
+}
+
 # --- privileged half: fix uids, then re-exec as the unprivileged user --------
 if [ "$(id -u)" -eq 0 ]; then
   current_uid="$(id -u "$T3_USER")"
   current_gid="$(id -g "$T3_USER")"
-  remapped=0
+  remap=0
+  [ "$PGID" != "$current_gid" ] && remap=1
+  [ "$PUID" != "$current_uid" ] && remap=1
 
-  if [ "$PGID" != "$current_gid" ]; then
-    log "remapping group ${T3_USER}: ${current_gid} -> ${PGID}"
-    groupmod -o -g "$PGID" "$T3_USER"
-    remapped=1
-  fi
-  if [ "$PUID" != "$current_uid" ]; then
-    log "remapping user ${T3_USER}: ${current_uid} -> ${PUID}"
-    usermod -o -u "$PUID" "$T3_USER"
-    remapped=1
-  fi
+  # A marker left by an earlier start means that migration did not finish. It
+  # must be completed even when the account already carries the target ids and
+  # a top-level writability probe passes: the interruption may have left deep
+  # files owned by the old uid while the top directory already looks correct.
+  resumed=0
+  [ -f "$OWNERSHIP_MARKER" ] && resumed=1
+  [ "$resumed" -eq 1 ] && log "resuming an interrupted ownership migration"
+  pending="$resumed"
 
   mkdir -p "$T3CODE_HOME" "$T3_WORKSPACE"
 
@@ -51,13 +70,56 @@ if [ "$(id -u)" -eq 0 ]; then
   # directory's uid: a volume mounted directly at the state dir arrives
   # root-owned while its parent still looks perfectly correct, and the server
   # then dies on `mkdir userdata` with nothing but an EACCES stack trace.
+  need=0
+  [ "$remap" -eq 1 ] && need=1
+  [ "$resumed" -eq 1 ] && need=1
   for dir in "$T3_HOME" "$T3CODE_HOME"; do
     mkdir -p "$dir"
-    if [ "$remapped" -eq 1 ] || ! gosu "$T3_USER" test -w "$dir"; then
+    gosu "$T3_USER" test -w "$dir" || need=1
+  done
+
+  # Persist the intent before the first account or ownership change. `usermod`
+  # rewrites ownership inside the home itself, so a crash between it and the
+  # explicit traversal would otherwise leave a half-migrated tree that passes a
+  # later writability probe and is never repaired.
+  if [ "$need" -eq 1 ] && [ "$pending" -eq 0 ]; then
+    write_ownership_marker
+    pending=1
+  fi
+
+  if [ "$remap" -eq 1 ]; then
+    if [ "$PGID" != "$current_gid" ]; then
+      log "remapping group ${T3_USER}: ${current_gid} -> ${PGID}"
+      groupmod -o -g "$PGID" "$T3_USER"
+    fi
+    if [ "$PUID" != "$current_uid" ]; then
+      log "remapping user ${T3_USER}: ${current_uid} -> ${PUID}"
+      usermod -o -u "$PUID" "$T3_USER"
+    fi
+  fi
+
+  # A resumed migration traverses both trees: the previous attempt may have
+  # stopped anywhere between them. A fresh one only walks what is not writable.
+  for dir in "$T3_HOME" "$T3CODE_HOME"; do
+    mkdir -p "$dir"
+    if [ "$resumed" -eq 1 ] || [ "$remap" -eq 1 ] || ! gosu "$T3_USER" test -w "$dir"; then
       log "taking ownership of ${dir}"
       chown -R "$PUID:$PGID" "$dir"
     fi
   done
+
+  # Only a completed, verified traversal clears the marker. `set -e` above means
+  # a failed chown aborts with the marker still in place, so the next start
+  # retries instead of trusting a partially migrated tree.
+  if [ "$pending" -eq 1 ]; then
+    if gosu "$T3_USER" test -w "$T3_HOME" && gosu "$T3_USER" test -w "$T3CODE_HOME"; then
+      rm -f "$OWNERSHIP_MARKER"
+      log "ownership migration complete"
+    else
+      log "WARNING: ownership migration finished but a directory is still not"
+      log "         writable; leaving ${OWNERSHIP_MARKER} to retry."
+    fi
+  fi
 
   # /workspace is the user's own tree. Only adopt it when it is empty or
   # already root-owned; never rewrite ownership across somebody's repos.
@@ -185,9 +247,12 @@ report_persistence() {
   fi
 
   case "$root" in
-    /var/lib/docker/volumes/*/_data)
-      local name="${root#/var/lib/docker/volumes/}"
-      name="${name%/_data}"
+    # A named or anonymous volume. The data root can carry a prefix (a btrfs
+    # subvolume layout reports sources as /@/var/lib/docker/volumes/...), so
+    # match the volume path wherever it starts rather than only at the root.
+    */var/lib/docker/volumes/*/_data)
+      local name="${root##*/var/lib/docker/volumes/}"
+      name="${name%%/*}"
       if printf '%s' "$name" | grep -qE '^[0-9a-f]{64}$'; then
         log "WARNING: ${point} is an anonymous volume. It survives a restart, but"
         log "         recreating this container creates a new one and every agent"
