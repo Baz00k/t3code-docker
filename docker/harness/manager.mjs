@@ -1,0 +1,372 @@
+// The persistent harness manager.
+//
+// One module owns the five supported harnesses: their exact-version install,
+// the global mise selection, the concrete executable path, and the facts
+// (configured, installed, runnable, authenticated, failed, baked fallback) the
+// setup console and T3 integration read. Status and resolve are strictly
+// read-only. Install/Update/Uninstall run one at a time under a lock and record
+// the exact version they resolved.
+import os from "node:os";
+import path from "node:path";
+
+import { CATALOGUE, getHarness, normalizeArch, supportsArch } from "./catalogue.mjs";
+import { createFs, createRunner, isExecutable, processAlive } from "./io.mjs";
+import * as lock from "./lock.mjs";
+import * as mise from "./mise.mjs";
+import { credentialSurface, detectAuth, probeVersion } from "./probe.mjs";
+import * as state from "./state.mjs";
+import { meetsMinimum } from "./version.mjs";
+
+const VERSION_SYNTAX = /^[0-9A-Za-z][0-9A-Za-z._+-]{0,63}$/;
+
+const DEFAULT_TIMEOUTS = Object.freeze({
+  mise: 120_000,
+  install: 15 * 60 * 1000,
+  probe: 20_000,
+});
+
+/**
+ * Build a manager. Every dependency is injectable so the unit tests can drive
+ * exact-version selection, lock contention, and failure recovery without mise,
+ * a container, or the host filesystem.
+ */
+export function createHarnessManager(options = {}) {
+  const env = options.env ?? process.env;
+  const home = options.home ?? env.HOME ?? os.homedir();
+  const ctx = {
+    env,
+    home,
+    fs: options.fs ?? createFs(),
+    run: options.run ?? createRunner(),
+    now: options.now ?? Date.now,
+    pid: options.pid ?? process.pid,
+    isAlive: options.isAlive ?? processAlive,
+    host: options.host ?? os.hostname(),
+    arch: normalizeArch(options.arch ?? process.arch),
+    miseBin: options.miseBin ?? env.T3_MISE_BIN ?? "mise",
+    configDir: options.configDir ?? env.MISE_CONFIG_DIR ?? path.join(home, ".config", "mise"),
+    dataDir: options.dataDir ?? env.MISE_DATA_DIR ?? path.join(home, ".local", "share", "mise"),
+    stateDir: options.stateDir ?? env.MISE_STATE_DIR ?? path.join(home, ".local", "state", "mise"),
+    cacheDir: options.cacheDir ?? env.MISE_CACHE_DIR ?? path.join(home, ".cache", "mise"),
+    lockStaleMs: options.lockStaleMs ?? 15 * 60 * 1000,
+    authCacheTtlMs: options.authCacheTtlMs ?? 10_000,
+    timeouts: { ...DEFAULT_TIMEOUTS, ...(options.timeouts ?? {}) },
+  };
+  ctx.lockPath = lock.lockPath(ctx.stateDir);
+  ctx.statePath = state.statePath(ctx.stateDir);
+
+  const authCache = new Map();
+  const authTtl = options.authTtlMs ?? ctx.authCacheTtlMs;
+
+  /** Read the shared snapshot once: mise, our state, and any live lock. */
+  async function snapshot() {
+    const listing = await mise.listTools(ctx);
+    const saved = await state.readState(ctx);
+    const live = await lock.liveHolder(ctx);
+    const degraded = listing.error ? [{ what: "mise", error: listing.error }] : [];
+    return { tools: listing.tools ?? {}, saved, live, degraded };
+  }
+
+  async function factsFor(entry, snap, { authenticate = true, probeBaked = false } = {}) {
+    const entries = snap.tools[entry.miseTool] ?? [];
+    const sourceEntry = entries.find((candidate) => candidate.source) ?? null;
+    const selected = entries.find((candidate) => candidate.active) ?? sourceEntry ?? entries[entries.length - 1] ?? null;
+    const configured = Boolean(sourceEntry);
+    const installed = configured && selected?.installed === true;
+    const installPath = installed ? selected.install_path ?? null : null;
+    const executable = installPath ? path.join(installPath, entry.executable) : null;
+    const executableExists = executable ? await isExecutable(ctx.fs, executable) : false;
+
+    const record = snap.saved.harnesses[entry.id] ?? {};
+    const recordedVersion = record.version ?? null;
+    const operation = record.operation ?? null;
+    const liveForThis = Boolean(snap.live && snap.live.id === entry.id);
+    const interrupted = operation?.state === "in-progress" && !liveForThis;
+
+    const installedVersion = installed ? selected.version ?? null : null;
+    const belowMinimum = installed && meetsMinimum(installedVersion, entry.minimumVersion) === false;
+    let failure = null;
+    if (interrupted) failure = "a previous operation was interrupted before it finished";
+    else if (operation?.state === "failed") failure = operation.error ?? "the last operation failed";
+    else if (belowMinimum) failure = `${installedVersion} is below the required ${entry.minimumVersion}`;
+    const failed = Boolean(failure);
+
+    const baked = await bakedFacts(entry, { probeBaked });
+
+    const authExecutable = executableExists ? executable : baked.present ? baked.executable : null;
+    const authenticated =
+      authenticate && authExecutable
+        ? await authFor(entry, authExecutable, installedVersion ?? recordedVersion)
+        : null;
+
+    return {
+      id: entry.id,
+      name: entry.name,
+      miseTool: entry.miseTool,
+      supported: supportsArch(entry, ctx.arch),
+      architecture: ctx.arch,
+      minimumVersion: entry.minimumVersion,
+      configured,
+      configuredVersion: sourceEntry?.requested_version ?? null,
+      installed,
+      installedVersion,
+      recordedVersion,
+      recordedExecutable: record.executable ?? null,
+      verifiedVersion: record.verifiedVersion ?? null,
+      executable: executableExists ? executable : null,
+      runnable: installed && executableExists && !failed && !liveForThis,
+      authenticated,
+      failed,
+      failure,
+      minimumSatisfied: installed ? !belowMinimum : null,
+      operation: operation?.kind ?? null,
+      operationState: operation?.state ?? null,
+      inProgress: Boolean(snap.live && snap.live.id === entry.id),
+      managedVersions: record.managedVersions ?? [],
+      bakedFallback: baked,
+      credentials: await credentialSurface(ctx, entry),
+    };
+  }
+
+  async function bakedFacts(entry, { probeBaked }) {
+    let executable = null;
+    for (const candidate of entry.bakedFallbacks) {
+      if (await ctx.fs.exists(candidate)) {
+        executable = candidate;
+        break;
+      }
+    }
+    if (!executable) return { present: false, executable: null, version: null };
+    let version = null;
+    if (probeBaked) {
+      const probe = await probeVersion(ctx, entry, executable);
+      version = probe.ok ? probe.version : null;
+    }
+    return { present: true, executable, version };
+  }
+
+  async function authFor(entry, executable, version) {
+    const key = `${executable}:${version ?? ""}`;
+    const cached = authCache.get(entry.id);
+    if (cached && cached.key === key && ctx.now() - cached.at < authTtl) return cached.value;
+    const value = await detectAuth(ctx, entry, { executable, runnable: true });
+    authCache.set(entry.id, { at: ctx.now(), key, value });
+    return value;
+  }
+
+  /** Exact-version selection from mise's install: the concrete executable. */
+  async function resolveExecutable(entry, version) {
+    const resolved = await mise.which(ctx, entry.miseTool);
+    if (resolved) return resolved;
+    return path.join(mise.installDir(ctx, entry.miseTool, version), entry.executable);
+  }
+
+  function assertVersion(version) {
+    if (!VERSION_SYNTAX.test(String(version ?? ""))) {
+      const error = new Error(`invalid version: ${version}`);
+      error.code = "invalid-version";
+      throw error;
+    }
+  }
+
+  async function runOperation(id, kind, work) {
+    const entry = getHarness(id);
+    if (!entry) return { ok: false, code: "unknown-harness", error: `unknown harness: ${id}` };
+    if (!supportsArch(entry, ctx.arch)) {
+      return { ok: false, code: "unsupported-arch", error: `${entry.name} has no ${ctx.arch} build` };
+    }
+
+    const held = await lock.acquireLock(ctx, { id, operation: kind });
+    if (!held.acquired) {
+      const detail = held.error
+        ? held.error
+        : `another operation is in progress (${held.holder?.operation ?? "unknown"}` +
+          `${held.holder?.id ? ` ${held.holder.id}` : ""})`;
+      return {
+        ok: false,
+        code: held.error ? "lock-error" : "busy",
+        error: detail,
+        harness: await resolve(id),
+      };
+    }
+
+    let outcome;
+    try {
+      const before = await state.readState(ctx);
+      const previous = before.harnesses[id] ?? {};
+      await state.updateHarness(ctx, id, {
+        operation: { kind, state: "in-progress", startedAt: ctx.now(), finishedAt: null, error: null },
+      });
+      const patch = await work(entry, previous) ?? {};
+      await state.updateHarness(ctx, id, {
+        ...patch,
+        operation: { kind, state: "ok", startedAt: null, finishedAt: ctx.now(), error: null },
+      });
+      outcome = { ok: true, code: "ok" };
+    } catch (error) {
+      const message = String(error?.message ?? error);
+      await state.updateHarness(ctx, id, {
+        operation: { kind, state: "failed", startedAt: null, finishedAt: ctx.now(), error: message },
+      });
+      outcome = { ok: false, code: error?.code ?? "failed", error: message };
+    } finally {
+      await held.release();
+    }
+    // Resolve after releasing the lock: the operation has finished, so the
+    // returned facts must not read as "still in progress".
+    authCache.delete(id);
+    return { ...outcome, harness: await resolve(id) };
+  }
+
+  /**
+   * Install a harness. Without an explicit version it resolves mise's latest
+   * and records that exact value. Already-installed versions are re-verified.
+   */
+  async function install(id, options = {}) {
+    return runOperation(id, "install", async (entry, previous) => {
+      const target = options.version ? String(options.version) : await mise.latest(ctx, entry.miseTool);
+      assertVersion(target);
+      if (meetsMinimum(target, entry.minimumVersion) === false) {
+        throw operationError("version-below-minimum", `${entry.name} ${target} is below the required ${entry.minimumVersion}`);
+      }
+      await mise.use(ctx, entry.miseTool, target);
+      const executable = await resolveExecutable(entry, target);
+      const probe = await probeVersion(ctx, entry, executable);
+      if (!probe.ok) throw operationError("not-runnable", probe.error ?? "the installed executable did not run");
+      return {
+        version: target,
+        executable,
+        verifiedVersion: probe.version,
+        installedAt: previous.installedAt ?? ctx.now(),
+        updatedAt: ctx.now(),
+        managedVersions: union(previous.managedVersions, [target]),
+      };
+    });
+  }
+
+  /** Update an installed harness. Always explicit; never implied by status. */
+  async function update(id, options = {}) {
+    return runOperation(id, "update", async (entry, previous) => {
+      if (!previous.version) {
+        const current = await resolve(id);
+        if (!current.installed) throw operationError("not-installed", `${entry.name} is not installed`);
+      }
+      const target = options.version ? String(options.version) : await mise.latest(ctx, entry.miseTool);
+      assertVersion(target);
+      if (meetsMinimum(target, entry.minimumVersion) === false) {
+        throw operationError("version-below-minimum", `${entry.name} ${target} is below the required ${entry.minimumVersion}`);
+      }
+      await mise.use(ctx, entry.miseTool, target);
+      const executable = await resolveExecutable(entry, target);
+      const probe = await probeVersion(ctx, entry, executable);
+      if (!probe.ok) throw operationError("not-runnable", probe.error ?? "the updated executable did not run");
+      return {
+        version: target,
+        executable,
+        verifiedVersion: probe.version,
+        updatedAt: ctx.now(),
+        managedVersions: union(previous.managedVersions, [target]),
+      };
+    });
+  }
+
+  /**
+   * Remove the managed selection and every version the manager installed, and
+   * report - never hide - the credentials and baked fallback that remain.
+   */
+  async function uninstall(id) {
+    return runOperation(id, "uninstall", async (entry, previous) => {
+      // Remove what this manager installed, plus any version the global
+      // selection currently points at, so a harness installed before the
+      // manager kept state still uninstalls cleanly.
+      const before = await mise.listTools(ctx);
+      const configured = (before.tools?.[entry.miseTool] ?? [])
+        .filter((candidate) => candidate.source && candidate.installed)
+        .map((candidate) => candidate.version);
+      const versions = union(
+        previous.managedVersions,
+        previous.version ? [previous.version] : [],
+        configured,
+      );
+      try {
+        await mise.unuse(ctx, entry.miseTool);
+      } catch (error) {
+        // A tool that is not configured is already unselected.
+        if (!/not (found|present|installed)/i.test(String(error?.message ?? ""))) throw error;
+      }
+      for (const version of versions) {
+        await mise.uninstall(ctx, entry.miseTool, version);
+      }
+      const listing = await mise.listTools(ctx);
+      const remaining = (listing.tools?.[entry.miseTool] ?? [])
+        .filter((candidate) => candidate.installed)
+        .map((candidate) => candidate.version);
+      return {
+        version: undefined,
+        executable: undefined,
+        verifiedVersion: undefined,
+        managedVersions: [],
+        uninstalledAt: ctx.now(),
+        remainingVersions: remaining,
+      };
+    });
+  }
+
+  /** Read-only facts for every catalogue entry. */
+  async function status(options = {}) {
+    const snap = await snapshot();
+    const harnesses = await Promise.all(
+      CATALOGUE.map((entry) => factsFor(entry, snap, options)),
+    );
+    return { harnesses, degraded: snap.degraded };
+  }
+
+  /** Read-only facts for one harness. */
+  async function resolve(id, options = {}) {
+    const entry = getHarness(id);
+    if (!entry) throw new Error(`unknown harness: ${id}`);
+    const snap = await snapshot();
+    return factsFor(entry, snap, options);
+  }
+
+  /** Drop the cached sign-in verdict after a sign-in changes it. */
+  function invalidateAuth(id) {
+    if (id === undefined) authCache.clear();
+    else authCache.delete(id);
+  }
+
+  return {
+    catalogue: () => CATALOGUE,
+    status,
+    resolve,
+    install,
+    update,
+    uninstall,
+    invalidateAuth,
+    paths: {
+      home,
+      configDir: ctx.configDir,
+      dataDir: ctx.dataDir,
+      stateDir: ctx.stateDir,
+      cacheDir: ctx.cacheDir,
+      lock: ctx.lockPath,
+      state: ctx.statePath,
+    },
+  };
+}
+
+function union(...lists) {
+  const out = [];
+  for (const list of lists) {
+    for (const value of list ?? []) {
+      if (value && !out.includes(value)) out.push(value);
+    }
+  }
+  return out;
+}
+
+function operationError(code, message) {
+  const error = new Error(message);
+  error.code = code;
+  return error;
+}

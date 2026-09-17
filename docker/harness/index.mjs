@@ -1,0 +1,22 @@
+// Public surface of the persistent harness manager.
+//
+//   import { createHarnessManager } from "./harness/index.mjs";
+//   const harness = createHarnessManager();
+//   const { harnesses, degraded } = await harness.status();
+//   const result = await harness.install("claude");            // latest, recorded exact
+//   const result = await harness.update("opencode", { version: "1.18.31" });
+//   const result = await harness.uninstall("grok");
+//
+// `status`/`resolve` are read-only. `install`/`update`/`uninstall` run one at a
+// time under a lock and record the exact version they resolved. See
+// docs/toolchain/harness-api.md.
+export { createHarnessManager } from "./manager.mjs";
+export {
+  CATALOGUE,
+  CURSOR_EXECUTABLE,
+  MINIMUM_OPENCODE_VERSION,
+  getHarness,
+  normalizeArch,
+  supportsArch,
+} from "./catalogue.mjs";
+export { compareVersions, meetsMinimum } from "./version.mjs";
