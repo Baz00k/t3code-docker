@@ -44,6 +44,7 @@ jobs:
     timeout-minutes: 20
     outputs:
       targets: ${{ steps.parse.outputs.targets }}
+      test_matrix: ${{ steps.parse.outputs.test_matrix }}
       short_sha: ${{ steps.parse.outputs.short_sha }}
       image: ${{ steps.parse.outputs.image }}
     steps:
@@ -59,21 +60,43 @@ jobs:
           case "$REPO" in
             dizys/*) echo "candidate rehearsals run in the fork, not upstream" >&2; exit 1 ;;
           esac
+          # Checks are capabilities the variant advertises; see the matrix in
+          # docs/toolchain/ci-evidence.md. Transitional targets keep their baked
+          # fallback, so the harness lifecycle and offline tests assert it;
+          # final targets cover those through TM-12's E2E hook instead.
+          capabilities() {
+            case "$1" in
+              slim|full) echo "infrastructure,mise,ownership,harness,offline,inventory,smoke,measure" ;;
+              core|browser) echo "infrastructure,mise,ownership,runtime,inventory,smoke,measure" ;;
+            esac
+          }
+          needs_e2e() {
+            case "$1" in core|browser) echo true ;; *) echo false ;; esac
+          }
           targets=""
+          test_matrix="[]"
           for target in $REQUESTED; do
             case "$target" in
               slim|full|core|browser) ;;
               *) echo "unknown target '$target' (want slim full core browser)" >&2; exit 2 ;;
             esac
             targets="${targets}${targets:+,}$target"
+            test_matrix="$(jq -c \
+              --argjson matrix "$test_matrix" --arg target "$target" \
+              --arg checks "$(capabilities "$target")" \
+              --argjson e2e "$(needs_e2e "$target")" \
+              '$matrix + [{target:$target, checks:$checks, e2e:$e2e}]')"
           done
           [ -n "$targets" ] || { echo "no targets requested" >&2; exit 2; }
+          matrix_json="$(jq -cn --argjson include "$test_matrix" '{include:$include}')"
           {
             echo "targets=$(jq -cn --arg t "$targets" '$t | split(",")')"
+            echo "test_matrix=$matrix_json"
             echo "short_sha=${GITHUB_SHA:0:12}"
             echo "image=$(printf '%s' "$REPO" | tr '[:upper:]' '[:lower:]')"
           } >> "$GITHUB_OUTPUT"
           printf 'Rehearsing %s at %s\n' "$targets" "${GITHUB_SHA:0:12}"
+          printf 'test matrix: %s\n' "$matrix_json"
 
       # Cheap, and they cover modules the capability checks below assemble by
       # hand. Fail here and the builds do not even start.
@@ -179,23 +202,7 @@ jobs:
       T3_SMOKE_ALLOW_OUTDATED_PINS: "1"
     strategy:
       fail-fast: false
-      matrix:
-        include:
-          # Transitional targets keep their baked fallback, so the harness
-          # lifecycle and offline tests assert it. `full` also carries the
-          # complete baked runtime set and the browser.
-          - target: slim
-            checks: infrastructure,mise,ownership,harness,offline,inventory,smoke,measure
-          - target: full
-            checks: infrastructure,mise,ownership,harness,offline,inventory,smoke,measure
-          # Final targets have no baked harness, so their harness lifecycle and
-          # offline behaviour is TM-12's E2E (`e2e: true` below).
-          - target: core
-            checks: infrastructure,mise,ownership,runtime,inventory,smoke,measure
-            e2e: true
-          - target: browser
-            checks: infrastructure,mise,ownership,runtime,inventory,smoke,measure
-            e2e: true
+      matrix: ${{ fromJSON(needs.prepare.outputs.test_matrix) }}
     steps:
       - uses: actions/checkout@v4
 
