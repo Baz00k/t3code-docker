@@ -748,13 +748,22 @@ if ($('mint')) {
       : '<span class="tc-dot" style="background:var(--err-fg)"></span>Server down';
 
     // A part that could not be read says so, instead of rendering as "none".
+    // A stale harness answer says so too: the sign-in state below is the last
+    // definite verdict, not a fresh probe (offline the refresh exceeds its
+    // budget and warms the next poll instead). Never render it as current.
     const note = $('degraded');
     if (note) {
-      note.innerHTML = (s.degraded || []).length
+      const staleHarness = s.harnessCache && s.harnessCache.stale
+        && (s.harnessCache.source === 'cache' || s.harnessCache.source === 'cheap');
+      note.innerHTML = ((s.degraded || []).length
         ? '<div class="tc-notice tc-notice--warn">Could not read '
           + esc(s.degraded.map((d) => d.what).join(', '))
           + '. Shown below as empty; the container may still be starting.</div>'
-        : '';
+        : '')
+        + (staleHarness
+          ? '<div class="tc-notice tc-notice--quiet">Harness sign-in state is cached'
+            + ' while a fresh probe finishes — it refreshes on the next poll.</div>'
+          : '');
     }
 
     renderStrip(s);
