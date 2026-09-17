@@ -70,7 +70,9 @@ done
 PROJECT=/tmp/t3code-runtime-matrix
 docker exec -u t3 "$NAME" mkdir -p "$PROJECT"
 # docker exec without -i does not forward stdin, so a heredoc would arrive
-# empty; write the file on the host and copy it in instead.
+# empty; write the file on the host and copy it in instead. `docker cp`
+# preserves the source mode, and the host user's uid is not the container t3
+# uid (1000) on every runner, so make it world-readable: mktemp hands out 0600.
 TMP_MISE="$(mktemp)"
 cat > "$TMP_MISE" <<EOF
 [tools]
@@ -82,6 +84,7 @@ bun = "$BUN_SELECTOR"
 deno = "$DENO_SELECTOR"
 uv = "$UV_SELECTOR"
 EOF
+chmod 644 "$TMP_MISE"
 docker cp "$TMP_MISE" "$NAME:$PROJECT/mise.toml" >/dev/null
 rm -f "$TMP_MISE"
 ulogin "$PROJECT" 'mise trust' >/dev/null 2>&1 || true
