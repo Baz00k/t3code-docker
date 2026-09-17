@@ -15,10 +15,11 @@ The result should provide:
 - an offline-safe T3 server and setup surface;
 - equivalent behavior on `linux/amd64` and `linux/arm64`.
 
-All verification in this plan is performed on `linux/amd64`. `linux/arm64` is
-expected to behave analogously, but it is not separately built, tested, or
-required as evidence; nothing in this effort is blocked on arm64 hardware or
-CI.
+`linux/amd64` and `linux/arm64` both remain supported, published targets, and
+every image must still build for both. Test and verification evidence is
+collected on `linux/amd64` only: `linux/arm64` is expected to behave
+analogously, so it is not separately smoke-tested or required as evidence, and
+nothing in this effort is blocked on arm64 hardware or CI.
 
 This is developed end-to-end on a fork, then proposed to
 `dizys/t3code-docker` as one coherent upstream pull request. The upstream remote
@@ -290,7 +291,7 @@ Acceptance criteria:
   Node version.
 - Project npm cannot modify the T3 installation.
 - Root commands do not resolve user mise shims or create root-owned mise state.
-- Native amd64 CI passes.
+- Native amd64 CI passes; arm64 builds but is not smoke-tested.
 
 ### Milestone 2: Idiomatic Project Detection
 
@@ -391,7 +392,7 @@ Keep integration tests focused on behavior owned by this repository:
   used by migrated tools;
 - managed harness lifecycle and actual T3 provider launch;
 - offline local health and bounded status responses;
-- native amd64 builds;
+- native amd64 builds (arm64 is built for publication but not smoke-tested);
 - exact release artifact promotion;
 - real Chromium and MCP operation in `browser`.
 
@@ -430,7 +431,8 @@ The upstream PR description should include:
 - the user-visible problem it solves;
 - what intentionally remains unchanged;
 - architecture and persistence implications;
-- verification performed on amd64;
+- verification performed on amd64 (arm64 remains supported and published, but is
+  not separately tested);
 - measured image-size impact where relevant;
 - migration or rollback considerations.
 

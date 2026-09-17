@@ -70,9 +70,11 @@ locally built target through the container runtime (`slim full`), or a pushed
 reference through the registry API without a daemon
 (`--registry HOST/REPO`).
 
-The baseline is measured on `linux/amd64` only. `linux/arm64` is expected to
-behave analogously but is not separately built, tested, or required as evidence
-(the same policy as [`TOOLCHAIN-MANAGEMENT-PLAN.md`](../../TOOLCHAIN-MANAGEMENT-PLAN.md)).
+The baseline is measured on `linux/amd64` only. `linux/arm64` remains a
+supported, published architecture that every image must still build for, but it
+is expected to behave analogously and is not separately measured or required as
+evidence (the same policy as
+[`TOOLCHAIN-MANAGEMENT-PLAN.md`](../../TOOLCHAIN-MANAGEMENT-PLAN.md)).
 
 The numbers below were measured with:
 
@@ -154,8 +156,8 @@ is a fresh measurement of the current source, not a byte-identical reproduction
 of `v0.4.5`.
 
 The amd64 baseline is complete: registry compressed/unpacked totals, artifact
-digests, and native startup times are all recorded above. No arm64 work is
-outstanding, because arm64 is not part of this effort's evidence.
+digests, and native startup times are all recorded above. arm64 remains built
+and published, but is not separately measured here.
 
 ## Known Floating Inputs
 
