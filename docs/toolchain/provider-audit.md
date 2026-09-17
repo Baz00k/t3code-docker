@@ -139,10 +139,13 @@ is where the derived command is read from.
 | plain `/tmp/.../cursor-agent` | `/tmp/.../cursor-agent update` | true |
 
 **Verdict: proceed for all five.** A managed mise path cannot be silently
-mutated by T3's native updater (it resolves manual-only). The remaining task for
-TM-07 is to keep the Cursor self-updater from running against a managed binary
-(disable/ignore the update action for managed instances, or surface it as a
-managed Update that goes through the harness manager).
+mutated by T3's npm/brew updater (it resolves manual-only). Cursor is the one
+exception by design: its resolver always offers `<resolved-executable> update`
+because the CLI updates itself, and that behaviour is accepted rather than
+gated. A managed Cursor that is updated through T3 or `cursor-agent update`
+simply becomes newer than the exact version the manager recorded; the manager
+reports the version it installed, not a lock, and no code exists to prevent or
+redirect the self-update.
 
 ## Executable Override Reproduction
 
@@ -274,7 +277,7 @@ Risks handed to TM-06:
 | Codex | `binaryPath` | `codex app-server` | manual-only for mise paths | proceed |
 | OpenCode | `binaryPath` | `opencode serve` | manual-only for mise paths; `MINIMUM_OPENCODE_VERSION=1.14.19` must be honoured by the manager | proceed |
 | Grok | `binaryPath` | `grok ... acp` | manual-only | proceed |
-| Cursor | `binaryPath` | `cursor-agent ... acp` | self-updating; must be gated for managed instances | proceed with the Cursor updater caveat |
+| Cursor | `binaryPath` | `cursor-agent ... acp` | self-updating; accepted for managed instances | proceed |
 
 No upstream blocker: every provider exposes the supported executable override
 seam the plan requires, and none of them installs or updates during discovery.
@@ -325,14 +328,15 @@ curl -fsSL https://downloads.cursor.com/lab/<version>/linux/x64/agent-cli-packag
   verbatim; no PATH manipulation.
 - **Canonical Cursor executable:** `cursor-agent`. `agent` is native-installer
   only and must not be relied on or aliased.
-- **Updater policy:** mise-owned paths are manual-only; the manager owns
-  Install/Update/Uninstall. Cursor is the exception to gate.
+- **Updater policy:** mise-owned paths are manual-only for T3's npm/brew
+  updater; the manager owns Install/Update/Uninstall. Cursor's own
+  `cursor-agent update` is accepted and is not intercepted or disabled.
 - **Credentials to preserve on Uninstall:** `~/.claude` / `CLAUDE_CONFIG_DIR`,
   `~/.codex` / `CODEX_HOME` (plus shadow home),
   `~/.local/share/opencode/auth.json`, `~/.cursor/cli-config.json`,
   `~/.grok/auth.json` and `XAI_API_KEY`.
-- **Blockers:** none. Cursor's self-updater is the only caveat and is a TM-07
-  integration requirement, not an upstream blocker.
+- **Blockers:** none. Cursor may self-update a managed binary; that is an
+  accepted product decision, not a caveat to code around.
 - **Limits inside providers:** project mise toolchains are only selected on
   explicit `mise exec`/`mise run` paths; a harness subprocess sees the image or
   project PATH, not a transparent project toolchain, unless the harness runs

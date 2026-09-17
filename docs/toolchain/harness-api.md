@@ -248,8 +248,9 @@ imported directly by those changes.
 
 - **TM-07 (connect T3 to managed executables):** take the absolute
   `resolve(id).executable` (only when `runnable`) and write it into the
-  provider's `binaryPath`. Gate Cursor's self-updater for managed instances. No
-  PATH shim is needed or permitted.
+  provider's `binaryPath`. No PATH shim is needed or permitted. Cursor's native
+  self-updater is accepted as-is and must not be gated; a managed Cursor may
+  update itself beyond the version the manager recorded.
 - **TM-08 (setup UI and CLI):** render `status()` facts - distinguish
   configured/installed/runnable/authenticated/failed and the baked fallback -
   and call `install`/`update`/`uninstall`. Drop the ad-hoc `which()` detection;

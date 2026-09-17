@@ -206,6 +206,12 @@ cannot accept managed executable paths or cannot disable/redirect its native
 provider updater, that is an upstream blocker rather than something to work
 around with PATH tricks.
 
+Cursor is the deliberate exception to update gating: its CLI is its own updater,
+so a managed Cursor that updates itself (directly or through T3's update action)
+becomes newer than the exact version recorded at install time. That is accepted.
+No code blocks, redirects, or surfaces the self-update, and the recorded version
+is advisory rather than a lock.
+
 Cursor currently has inconsistent names: the image installs and setup probes
 `cursor-agent`, while `t3-login` invokes `agent`. Audit whether the upstream
 installer still supplies that alias, choose one canonical managed executable,
