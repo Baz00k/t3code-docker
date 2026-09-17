@@ -106,8 +106,9 @@ expected_digest() { # platform -> digest or empty
 }
 
 verify_one() {
-  local ref="$1" raw members index_digest ambiguous
+  local ref="$1" raw members foreign index_digest ambiguous
   local want_platform found_one member_platform member_digest expected ok=1
+  local foreign_os foreign_arch foreign_digest
 
   raw="$(docker buildx imagetools inspect --raw "$ref" 2>/dev/null)" \
     || { report_no "$ref: cannot read the manifest"; return; }
@@ -122,11 +123,25 @@ verify_one() {
 
   # Attestation manifests ride along with some builds. They are not image
   # members and cannot be pulled by platform, so they are reported, not failed.
-  ambiguous="$(printf '%s' "$raw" | jq '[.manifests[] | select((.platform.os // "") != "linux")] | length')"
+  # Anything else that is not a Linux image - a Windows or Darwin image, say -
+  # is an unexpected member and fails: only linux/<arch> image members are
+  # allowed.
+  ambiguous="$(printf '%s' "$raw" | jq '[.manifests[] | select((.platform.os // "") == "unknown" and (.platform.architecture // "") == "unknown")] | length')"
+  foreign="$(printf '%s' "$raw" | jq -r '
+    .manifests[]
+    | select((.platform.os // "") != "linux")
+    | select((.platform.os // "") != "unknown" or (.platform.architecture // "") != "unknown")
+    | [(.platform.os // "?"), (.platform.architecture // "?"), .digest] | @tsv')"
   members="$(printf '%s' "$raw" | jq -r '
     .manifests[]
     | select((.platform.os // "") == "linux")
     | [.platform.architecture, .digest] | @tsv')"
+
+  while IFS=$'\t' read -r foreign_os foreign_arch foreign_digest; do
+    [ -n "$foreign_os" ] || continue
+    report_no "$ref: unexpected member $foreign_os/$foreign_arch ($foreign_digest)"
+    ok=0
+  done <<< "$foreign"
 
   for want_platform in $wanted; do
     found_one=0

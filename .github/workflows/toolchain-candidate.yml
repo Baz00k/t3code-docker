@@ -62,12 +62,14 @@ jobs:
           esac
           # Checks are capabilities the variant advertises; see the matrix in
           # docs/toolchain/ci-evidence.md. Transitional targets keep their baked
-          # fallback, so the harness lifecycle and offline tests assert it;
-          # final targets cover those through TM-12's E2E hook instead.
+          # fallback, so the harness lifecycle test asserts it, and both kinds
+          # of target run the offline check (which asserts the fallback the
+          # variant actually ships). Final targets cover the harness lifecycle
+          # through TM-12's E2E hook instead.
           capabilities() {
             case "$1" in
               slim|full) echo "infrastructure,mise,ownership,harness,offline,inventory,smoke,measure" ;;
-              core|browser) echo "infrastructure,mise,ownership,runtime,inventory,smoke,measure" ;;
+              core|browser) echo "infrastructure,mise,ownership,offline,runtime,inventory,smoke,measure" ;;
             esac
           }
           needs_e2e() {
@@ -439,14 +441,20 @@ jobs:
               --expect "linux/amd64=${amd64_digest}" \
               --expect "linux/arm64=${arm64_digest}" \
               "${tags[0]}"
+            # The run-scoped tag is convenient but re-running the workflow at
+            # the same commit overwrites it; the index digest is the immutable
+            # record retained here.
+            manifest_digest="$(docker buildx imagetools inspect "${tags[0]}" \
+              --format '{{.Manifest.Digest}}')"
             jq -cn \
               --arg target "$target" \
               --arg manifestRef "${tags[0]}" \
-              --arg manifestRefImmutable "${tags[1]}" \
+              --arg manifestRefRunScoped "${tags[1]}" \
+              --arg manifestDigest "$manifest_digest" \
               --argjson amd64 "$(cat "$amd64")" \
               --argjson arm64 "$(cat "$arm64")" \
               '{target:$target, manifestRef:$manifestRef,
-                manifestRefImmutable:$manifestRefImmutable,
+                manifestRefRunScoped:$manifestRefRunScoped, manifestDigest:$manifestDigest,
                 members:{amd64:$amd64, arm64:$arm64}, promotion:"tested-digests-only"}' \
               >> "$evidence/candidate-evidence.ndjson"
           done

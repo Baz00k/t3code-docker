@@ -346,5 +346,46 @@ test("invalidate is bounded: a stalled refresh leaves the next poll a cheap answ
   await sleep(350);
   const later = await cache.snapshot();
   assert.deepEqual(later.harnesses, [{ id: "claude", signedIn: true }]);
-  assert.equal(world.fullCalls, 1, "the stalled refresh landed in the background");
+  assert.ok(world.fullCalls >= 1, "a refresh was attempted");
+});
+
+test("invalidate does not reuse a refresh that began before the write", async () => {
+  const clock = manualClock();
+  let signedIn = false;
+  const calls = [];
+  let release;
+  const gate = new Promise((resolve) => { release = resolve; });
+  let held = false;
+  const cache = createHarnessCache({
+    now: clock.now,
+    budgetMs: 50,
+    refreshIntervalMs: 1_000,
+    liveTtlMs: 500,
+    full: async () => {
+      // Capture the verdict at the start, the way a real probe batch does.
+      const captured = signedIn;
+      calls.push(captured);
+      if (!held) {
+        held = true;
+        await gate;
+      }
+      return { harnesses: [{ id: "claude", signedIn: captured }], degraded: [] };
+    },
+    cheap: async () => ({ harnesses: [{ id: "claude", signedIn }], degraded: [] }),
+  });
+
+  signedIn = false;
+  const pending = cache.snapshot();       // starts a refresh with pre-write facts
+  await sleep(5);
+  assert.deepEqual(calls, [false], "the in-flight refresh captured the old verdict");
+  signedIn = true;                         // the credential write lands
+  const invalidating = cache.invalidate(); // must not just join that refresh
+  await sleep(80);                          // let its wait exceed the budget
+  release();
+  assert.equal(await invalidating, false, "the wait is bounded");
+  await pending;
+  await sleep(10);
+  const after = await cache.snapshot();
+  assert.equal(after.harnesses[0].signedIn, true, "the next poll must see the write");
+  assert.deepEqual(calls, [false, true], "a refresh started after the write");
 });

@@ -29,10 +29,10 @@ Two mechanisms enforce it:
 - **Verify the manifest.** Promotion copies the pushed indexes (so provenance
   stays attached) and `scripts/verify-promoted-manifest.sh` re-reads the
   promoted tag through the registry and asserts that each platform member is
-  the exact digest that was built - and, for amd64, tested. It also fails on a
-  missing, duplicated, or unexpected image member. Attestation manifests
-  (`unknown/unknown`) are reported, not failed: they are not pullable image
-  members.
+  the exact digest that was built - and, for amd64, tested. It fails on a
+  missing, duplicated, or unexpected image member, including any non-Linux
+  platform that is not an attestation descriptor (`unknown/unknown`); those are
+  reported, not failed, because they are not pullable image members.
 
 The arm64 member is built and digest-mapped but not smoke-tested. That matches
 the effort's verification policy: both architectures are supported and
@@ -88,7 +88,10 @@ runs the capability checks against the exact amd64 digest, and promotes the
 digests into candidate manifests:
 
 - `<target>-candidate` - moving rehearsal pointer;
-- `<target>-candidate-<short sha>` - immutable per run.
+- `<target>-candidate-<short sha>` - run-scoped copy of the same manifest.
+  Re-running the workflow at the same commit overwrites it, so the evidence
+  records the promoted index digest (`manifestDigest`) as the immutable
+  reference, not the tag.
 
 The workflow refuses to run on the upstream repository (`dizys/*`), so a
 rehearsal can never publish to the upstream package. Official tag names are
@@ -109,7 +112,7 @@ tag. `--variant` is passed explicitly for the two scripts that select profiles.
 | Mise contract | `test-mise.sh` | yes | yes | yes | yes |
 | Ownership migration | `test-ownership.sh` | yes | yes | yes | yes |
 | Harness lifecycle | `test-harness-manager.sh`, `test-harness-surfaces.sh` | yes | yes | E2E | E2E |
-| Offline setup status | `test-offline.sh --variant` | yes | yes | E2E | E2E |
+| Offline setup status | `test-offline.sh --variant` | yes | yes | yes | yes |
 | Runtime matrix via mise | `test-runtime-matrix.sh` | no | no | yes | yes |
 | Image inventory | `test-image-inventory.sh --variant` | yes | yes | yes | yes |
 | Smoke (`--variant`, exact reference) | `smoke-test.sh` | yes | yes | yes | yes |
@@ -117,21 +120,22 @@ tag. `--variant` is passed explicitly for the two scripts that select profiles.
 
 Rationale for the gaps:
 
-- **Harness lifecycle and offline on `core`/`browser`.** The existing suite
-  asserts the *transitional* contract (a baked harness fallback is present) and
-  installs exact harness versions from mise. The final targets do not bake a
-  harness, so the manager reports `bakedFallback.present: false`; asserting the
-  transitional value would be wrong. Managed install/launch and offline
-  recreation on the final targets are TM-12's E2E, wired into this workflow
-  through the hook below. `test-offline.sh` is variant-aware since this ticket:
-  `slim`/`full` assert the baked fallback, `core`/`browser` assert its absence,
-  and every other offline assertion is unchanged.
-- **Runtime matrix on `slim`/`full`.** The matrix proves the *final* images can
-  provide the runtimes the transitional `full` used to bake. `browser` is
-  `core` plus Chromium/fonts/MCP, so the runtime capability is proven once on
-  `core` and `browser`'s own contract is exercised by the browser probes.
-- **Measurement on `full`/`browser`.** Measured locally from the pulled digest
-  so the startup timing belongs to the artifact under test.
+- **Harness lifecycle on `core`/`browser`.** The existing suite asserts the
+  *transitional* contract (a baked harness fallback is present) and installs
+  exact harness versions from mise. The final targets do not bake a harness, so
+  the manager reports `bakedFallback.present: false`; asserting the
+  transitional value would be wrong. Managed install/launch on the final
+  targets is TM-12's E2E, wired into this workflow through the hook below.
+- **Offline on all four.** `test-offline.sh` is variant-aware since this
+  ticket: `slim`/`full` assert the baked fallback, `core`/`browser` assert its
+  absence, and every other offline assertion is unchanged. That closes the
+  earlier gap where only the transitional targets ran it.
+- **Runtime matrix on `core`/`browser`.** The matrix proves the final images
+  can provide the runtimes the transitional `full` used to bake. `slim`/`full`
+  do not run it: the transitional targets keep the baked toolchains this
+  effort is replacing.
+- **Measurement on all four.** Measured locally from the pulled digest so the
+  startup timing belongs to the artifact under test.
 
 ### E2E Hook (TM-12)
 
@@ -180,18 +184,20 @@ Evidence record shape:
 
 `digest` is the platform manifest (the promoted member and, for amd64, the
 artifact the checks ran against); `indexDigest` is the pushed index buildx
-returned, which is what promotion copies. `tested` is `true` only in the test
-job's artifact, and only when every check step passed. The promotion job reads
-the amd64 platform digest *only* from the tested artifact, so a build that was
-never tested cannot be promoted even if its build artifact exists.
+returned, which is what promotion copies. In the candidate path, `tested` is
+`true` only in the test job's artifact, and only when every check step passed;
+the release path marks its amd64 record `tested: true` after its own smoke step,
+so `merge` can apply the same gate. The promotion job reads the amd64 platform
+digest *only* from the tested artifact, so a build that was never tested cannot
+be promoted even if its build artifact exists.
 
 ## Failure Rehearsal
 
 The gate is exercised by a rehearsal run on a scratch ref where the amd64
-checks fail: the test job does not write `tested-<target>.json`, the promote
-job's evidence check fails, and no candidate manifest is created or verified.
-The run summary and the absence of `candidate-evidence` are the proof. The
-recorded run is linked in the issue's handoff.
+checks fail: the test job fails at the smoke step and writes no
+`tested-<target>.json`, so `promote` is skipped (it needs every test job) and no
+candidate manifest or `candidate-evidence` artifact is created. The recorded
+run is linked in the issue's handoff.
 
 The script-level gate is exercised the same way in CI and locally:
 
@@ -233,7 +239,7 @@ called out here so the originating work can review them:
 | Defect | Owner | Fix |
 | --- | --- | --- |
 | `test-runtime-matrix.sh` copied a `mktemp` (0600) `mise.toml` into the container; on a runner whose uid is not the container's `t3` uid, mise could not read it and every runtime check failed. | TM-10 | `chmod 644` before `docker cp`. |
-| The setup server kept serving an authenticated harness snapshot from before a credential write: storing a Codex key left the panel on "not signed in" until the 15s refresh window elapsed. | TM-08/TM-09 | An explicit credential write now drops the warm snapshot and refreshes through the same bounded read before returning (`cache.mjs` `invalidate()`, `server.mjs` `refreshSignInState`); sign-in completion and child exits keep the manager-only verdict flush, covered by two new unit tests. |
+| The setup server kept serving an authenticated harness snapshot from before a credential write: storing a Codex key left the panel on "not signed in" until the 15s refresh window elapsed. | TM-08/TM-09 | An explicit credential write bumps a cache generation, waits out any refresh that began before it, and refreshes through the same bounded read before returning (`cache.mjs` `invalidate()`, `server.mjs` `refreshSignInState`); sign-in completion and child exits keep the manager-only verdict flush. Covered by three new unit tests, including the pre-write-refresh race. |
 | The console audit compared button tops across an action group that is designed to wrap on phone widths, flagging the intended second line on `full`. | TM-10 | The audit compares buttons that share a visual line for groups that opt into wrapping; the strict single-line check stays everywhere else. |
 
 All three reproduce on the pre-refresh pin set; none is a TM-11 regression.
@@ -276,8 +282,9 @@ scripts/verify-promoted-manifest.sh \
   localhost:5005/t3code:core-candidate
 ```
 
-`actionlint` (including its shellcheck pass) and `docker compose config` are the
-workflow linters, run by `lint` in `build.yml`:
+`actionlint` and `docker compose config` are the workflow linters used to
+verify this ticket. CI's `lint` job runs `bash -n`, shellcheck, and
+`docker compose config`; actionlint is run manually with the same image:
 
 ```sh
 docker run --rm -v "$PWD:/repo" -w /repo rhysd/actionlint:latest

@@ -179,19 +179,32 @@ export function createHarnessCache({
   liveTtlMs = 30_000,
   now = Date.now,
 } = {}) {
-  let warm = null; // { harnesses, degraded, at }
+  let warm = null; // { harnesses, degraded, at, generation }
   let lastFailure = null;
+  let generation = 0; // bumped by invalidate(); facts from older runs are not served
   const coalescer = createCoalescer();
   let lastRefreshStart = 0;
+
+  /** Facts are only usable when they were gathered for the current generation. */
+  const current = (entry) => Boolean(entry) && entry.generation === generation;
 
   const startRefresh = () => {
     lastRefreshStart = now();
     lastFailure = null;
+    const startedAt = generation;
     return coalescer
       .run(async () => {
         const result = await full();
-        warm = { harnesses: result?.harnesses ?? [], degraded: result?.degraded ?? [], at: now() };
-        return warm;
+        const entry = {
+          harnesses: result?.harnesses ?? [],
+          degraded: result?.degraded ?? [],
+          at: now(),
+          generation: startedAt,
+        };
+        // A refresh that began before a credential change must not replace
+        // post-write facts, and must not be mistaken for them.
+        if (startedAt === generation) warm = entry;
+        return entry;
       })
       .catch((error) => {
         lastFailure = { what: "harness refresh", error: String(error?.message ?? error).slice(0, 200) };
@@ -230,7 +243,7 @@ export function createHarnessCache({
   const snapshot = async () => {
     if (due()) {
       const raced = await withTimeout(startRefresh(), budgetMs);
-      if (raced.ok && raced.value && raced.value.at !== null) {
+      if (raced.ok && raced.value && raced.value.at !== null && current(raced.value)) {
         return {
           harnesses: raced.value.harnesses,
           degraded: withFailure(raced.value.degraded),
@@ -240,11 +253,13 @@ export function createHarnessCache({
           refreshing: coalescer.pending,
         };
       }
-      // The budget lost: the refresh keeps running in the background and
-      // warms the next poll. Answer from local state now.
+      // Facts gathered before a credential change must not be served: make the
+      // next poll refresh again. A plain budget loss needs no such reset - the
+      // refresh keeps running and warms the next poll.
+      if (raced.ok && raced.value && !current(raced.value)) lastRefreshStart = 0;
     } else if (coalescer.pending) {
       const raced = await withTimeout(coalescer.run(() => null), budgetMs);
-      if (raced.ok && raced.value && raced.value.at !== null) {
+      if (raced.ok && raced.value && raced.value.at !== null && current(raced.value)) {
         const fresh = !isStale(raced.value.at, now(), liveTtlMs);
         return {
           harnesses: raced.value.harnesses,
@@ -255,8 +270,9 @@ export function createHarnessCache({
           refreshing: coalescer.pending,
         };
       }
+      if (raced.ok && raced.value && !current(raced.value)) lastRefreshStart = 0;
     }
-    if (warm) {
+    if (current(warm)) {
       // A slow refresh that settles stale must not overwrite a warm answer
       // with "unknown": the refresh updates `warm` when it lands, and the
       // stale flag says exactly how old that answer is.
@@ -296,18 +312,30 @@ export function createHarnessCache({
 
   /**
    * Drop warm facts and refresh now. A credential write calls this so the next
-   * poll cannot serve a verdict reached before the write. The refresh gets the
-   * same budget as a poll; when the budget loses it keeps running in the
-   * background and the next poll picks it up.
+   * poll cannot serve a verdict reached before the write; the generation bump
+   * makes every fact gathered before it unusable, however it lands. A refresh
+   * already in flight is waited out first, because joining it would just hand
+   * back pre-write facts. Both stages share the poll budget; when it is
+   * exceeded the refresh keeps running, the next poll is made due again, and
+   * it refreshes then.
    */
   const invalidate = async () => {
+    generation += 1;
     warm = null;
     lastRefreshStart = 0;
+    if (coalescer.pending) {
+      const settled = await withTimeout(coalescer.run(() => null), budgetMs);
+      if (!settled.ok) {
+        lastRefreshStart = 0;
+        return false;
+      }
+    }
     const raced = await withTimeout(startRefresh(), budgetMs);
-    return raced.ok;
+    if (!raced.ok) lastRefreshStart = 0;
+    return raced.ok && current(raced.value);
   };
 
-  const peek = () => warm;
+  const peek = () => (current(warm) ? warm : null);
 
   return { snapshot, snapshotCheap, invalidate, peek, get refreshing() { return coalescer.pending; } };
 }
