@@ -185,8 +185,27 @@ const audit = () => {
     if (hs.size > 1) {
       add("uneven-buttons", `heights ${[...hs].join(", ")} in one group`, group);
     }
-    const tops = new Set(btns.map((b) => Math.round(box(b).top)));
-    if (tops.size > 1) add("unaligned-buttons", `tops ${[...tops].join(", ")}`, group);
+    // Groups that opt into wrapping (the Agents card says so in its class, and
+    // its comment says wrapping beats squeezing the name column) are measured
+    // per visual line: buttons that share a line must share a top, and a
+    // button on the next line is the intended layout rather than a defect.
+    // Every other group must still stay on one line.
+    if (group.classList.contains("tc-row-actions--wrap")) {
+      const lines = [];
+      for (const b of btns) {
+        const top = box(b).top;
+        const line = lines.find((l) => Math.abs(l.top - top) <= 2);
+        if (line) line.btns.push(b);
+        else lines.push({ top, btns: [b] });
+      }
+      for (const line of lines) {
+        const tops = new Set(line.btns.map((b) => Math.round(box(b).top)));
+        if (tops.size > 1) add("unaligned-buttons", `tops ${[...tops].join(", ")} in one line`, group);
+      }
+    } else {
+      const tops = new Set(btns.map((b) => Math.round(box(b).top)));
+      if (tops.size > 1) add("unaligned-buttons", `tops ${[...tops].join(", ")}`, group);
+    }
   }
 
   // -- 6. a row's text baseline vs its chip ---------------------------------
