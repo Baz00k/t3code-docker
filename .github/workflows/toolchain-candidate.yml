@@ -456,7 +456,7 @@ jobs:
             echo
             echo '| Target | Manifest | amd64 digest | amd64 tested | arm64 digest |'
             echo '| --- | --- | --- | --- | --- |'
-            jq -r '"| `\(.target)` | `\(.manifestRef)` | `\(.members.amd64.digest)` | \(.members.amd64.tested) | `\(.members.arm64.digest)` |"' \
+            jq -r '.[] | "| `\(.target)` | `\(.manifestRef)` | `\(.members.amd64.digest)` | \(.members.amd64.tested) | `\(.members.arm64.digest)` |"' \
               "$evidence/candidate-evidence.json"
           } >> "$GITHUB_STEP_SUMMARY"
 
