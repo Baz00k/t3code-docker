@@ -217,6 +217,22 @@ refreshed for the harnesses and MCP servers, T3 stays at 0.0.40, and rehearsals
 waive the freshness assertion until the migration lands. The issue handoff
 records this as a follow-up for the map.
 
+## Corrections Returned To Owners
+
+Wiring the full matrix in CI surfaced three defects that predate TM-11. They
+were fixed on the TM-11 branch because they block every candidate run, and are
+called out here so the originating work can review them:
+
+| Defect | Owner | Fix |
+| --- | --- | --- |
+| `test-runtime-matrix.sh` copied a `mktemp` (0600) `mise.toml` into the container; on a runner whose uid is not the container's `t3` uid, mise could not read it and every runtime check failed. | TM-10 | `chmod 644` before `docker cp`. |
+| The setup server kept serving an authenticated harness snapshot from before a credential write: storing a Codex key left the panel on "not signed in" until the 15s refresh window elapsed. | TM-08/TM-09 | An explicit credential write now drops the warm snapshot and refreshes through the same bounded read before returning (`cache.mjs` `invalidate()`, `server.mjs` `refreshSignInState`); sign-in completion and child exits keep the manager-only verdict flush, covered by two new unit tests. |
+| The console audit compared button tops across an action group that is designed to wrap on phone widths, flagging the intended second line on `full`. | TM-10 | The audit compares buttons that share a visual line for groups that opt into wrapping; the strict single-line check stays everywhere else. |
+
+All three reproduce on the pre-refresh pin set; none is a TM-11 regression.
+`smoke-test.sh`'s "a stored key flips the panel without waiting for a cache"
+and "the console has no layout defects" are the assertions that caught them.
+
 ## Unavailable Checks
 
 - **Credentialed harness sign-ins.** No provider accounts are used in CI;
