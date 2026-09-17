@@ -345,38 +345,157 @@ if ($('mint')) {
   };
 
   // ------------------------------------------------------------ agents --
+  // The Agents card is a thin surface over the shared harness manager (via
+  // /status and /harnesses): exact versions, runnable state, the operation in
+  // flight, the failure that stopped the last one, and the baked fallback that
+  // remains after an Uninstall. Sign-in still probes the managed executable,
+  // and lifecycle POSTs resolve `latest` to an exact version server-side, so
+  // the card and `t3-harness` report identical selections and errors.
+  const versionDrafts = new Map();
+  const harnessBusy = new Set();
+  const harnessNotice = new Map();
+
+  const agentChip = (h) => {
+    if (h.inProgress) {
+      const label = h.operation === 'install' ? 'Installing…'
+        : h.operation === 'update' ? 'Updating…'
+        : h.operation === 'uninstall' ? 'Removing…' : 'Working…';
+      return chip('info', label);
+    }
+    if (h.failed) return chip('bad', 'Failed');
+    if (!h.installed && !(h.bakedFallback && h.bakedFallback.present)) return chip('bad', 'Not installed');
+    if (h.runnable && h.signedIn === true) return chip('ok', 'Signed in');
+    if (h.runnable && h.signedIn === false) return chip('warn', 'Not signed in');
+    if (h.runnable) return chip('idle', 'Installed');
+    if (h.bakedFallback && h.bakedFallback.present) return chip('warn', 'Fallback');
+    if (!h.supported) return chip('idle', 'No build for this arch');
+    return chip('idle', 'Sign-in state not readable');
+  };
+
+  const agentMeta = (h) => {
+    const bits = [];
+    if (h.version) bits.push('<span class="tc-mono">' + esc(h.version) + '</span>');
+    else if (h.configuredVersion) bits.push('<span class="tc-mono">' + esc(h.configuredVersion) + '</span>');
+    if (h.runnable) bits.push('runnable');
+    else if (h.installed) bits.push('installed');
+    if (h.inProgress && h.operation) bits.push(esc(h.operation) + ' in progress');
+    if (h.bakedFallback && h.bakedFallback.present) {
+      bits.push('baked fallback'
+        + (h.bakedFallback.version ? ' ' + esc(h.bakedFallback.version) : ' present'));
+    }
+    const lines = [];
+    if (bits.length) lines.push(bits.join(' · '));
+    if (h.failed && h.failure) {
+      lines.push('<span style="color:var(--err-fg)">' + esc(h.failure).slice(0, 220) + '</span>');
+    }
+    const notice = harnessNotice.get(h.id);
+    if (notice) lines.push('<span style="color:var(--err-fg)">' + esc(notice) + '</span>');
+    // How each one authenticates, so a button press holds no surprises.
+    const how = h.canSignIn && h.canSetKey ? 'Browser sign-in, or a stored API key'
+      : h.canSignIn ? 'Browser sign-in'
+      : h.canSetKey ? 'API key, per provider' : '';
+    if (how && (h.runnable || (h.bakedFallback && h.bakedFallback.present))) lines.push(esc(how));
+    if (!h.installed && !(h.bakedFallback && h.bakedFallback.present)) {
+      lines.push('Not present - install the managed harness to use it');
+    }
+    return lines.length
+      ? '<div class="tc-row-meta">' + lines.join('<br>') + '</div>' : '';
+  };
+
   const renderAgents = (s) => {
     const signed = s.harnesses.filter((h) => h.signedIn === true).length;
     $('agent-count').textContent = signed + ' of ' + s.harnesses.length + ' signed in';
+    // Preserve version drafts across the periodic re-render: without this the
+    // 15s poll wipes an explicit version mid-typing.
+    for (const input of document.querySelectorAll('.hv-version')) {
+      if (input.dataset.agent) versionDrafts.set(input.dataset.agent, input.value);
+    }
     $('agents').innerHTML = s.harnesses.map((h) => {
-      const status = !h.installed ? chip('bad', 'Not installed')
-        : h.signedIn === true ? chip('ok', 'Signed in')
-        : h.signedIn === false ? chip('warn', 'Not signed in')
-        : chip('idle', 'Sign-in state not readable');
-      const actions = !h.installed ? ''
-        : (h.canSignIn
+      const busy = harnessBusy.has(h.id) || h.inProgress;
+      const draft = versionDrafts.get(h.id) ?? '';
+      const versionInput = '<input class="tc-input tc-input--mono tc-input--sm hv-version"'
+        + ' data-agent="' + h.id + '" placeholder="latest" aria-label="Version for ' + esc(h.name) + '"'
+        + ' value="' + esc(draft) + '" style="width:7.5rem"'
+        + (busy ? ' disabled' : '') + ' />';
+      let lifecycle = '';
+      if (busy) {
+        lifecycle = '<button type="button" class="tc-btn tc-btn--ghost tc-btn--sm" disabled>'
+          + '<span class="tc-spin"></span></button>';
+      } else if (!h.installed) {
+        lifecycle = versionInput
+          + '<button type="button" class="tc-btn tc-btn--primary tc-btn--sm h-install"'
+          + ' data-agent="' + h.id + '">Install</button>';
+      } else {
+        lifecycle = versionInput
+          + '<button type="button" class="tc-btn tc-btn--outline tc-btn--sm h-update"'
+          + ' data-agent="' + h.id + '">Update</button>'
+          + '<button type="button" class="tc-btn tc-btn--ghost tc-btn--sm h-uninstall"'
+          + ' data-agent="' + h.id + '">Uninstall</button>';
+      }
+      const signin = (h.runnable || (h.bakedFallback && h.bakedFallback.present)) && !busy
+        ? (h.canSignIn
             ? '<button type="button" class="tc-btn tc-btn--ghost tc-btn--sm signin"'
               + ' data-agent="' + h.id + '">Sign in</button>' : '')
           + (h.canSetKey
             ? '<button type="button" class="tc-btn tc-btn--outline tc-btn--sm setkey"'
-              + ' data-agent="' + h.id + '" data-kind="' + esc(h.keyKind) + '">API key</button>' : '');
-      // Saying how each one authenticates removes the guesswork about what a
-      // button is going to do before you press it.
-      const how = !h.installed ? 'Not present in this image'
-        : h.canSignIn && h.canSetKey ? 'Browser sign-in, or a stored API key'
-        : h.canSignIn ? 'Browser sign-in'
-        : h.canSetKey ? 'API key, per provider'
+              + ' data-agent="' + h.id + '" data-kind="' + esc(h.keyKind) + '">API key</button>' : '')
         : '';
       return '<div class="tc-row">'
         + '<span class="tc-tile' + (h.signedIn === true ? ' tc-tile--signed' : '')
         + '" style="--tile:var(--id-' + h.id + ')" aria-hidden="true">'
         + esc(initials(h.name)) + '</span>'
         + '<div class="tc-row-main"><div class="tc-row-nameline">'
-        + '<span class="tc-row-name">' + esc(h.name) + '</span>' + status + '</div>'
-        + (how ? '<div class="tc-row-meta">' + esc(how) + '</div>' : '') + '</div>'
-        + '<div class="tc-row-actions">' + actions + '</div>'
+        + '<span class="tc-row-name">' + esc(h.name) + '</span>' + agentChip(h) + '</div>'
+        + agentMeta(h) + '</div>'
+        + '<div class="tc-row-actions tc-row-actions--wrap">' + lifecycle + signin + '</div>'
         + '<div class="tc-row-panel" id="agent-' + h.id + '"></div></div>';
     }).join('');
+
+    for (const input of document.querySelectorAll('.hv-version')) {
+      input.oninput = () => versionDrafts.set(input.dataset.agent, input.value);
+      input.onkeydown = (e) => { if (e.key === 'Enter') e.preventDefault(); };
+    }
+    const callLifecycle = async (kind, id, button) => {
+      const version = (versionDrafts.get(id) ?? '').trim();
+      harnessNotice.delete(id);
+      harnessBusy.add(id);
+      if (button) button.disabled = true;
+      load();
+      try {
+        const res = await fetch(BASE + '/harnesses/' + kind, {
+          method: 'POST', headers: {'content-type': 'application/json'},
+          body: JSON.stringify(version ? {id, version} : {id}),
+        });
+        const data = await res.json().catch(() => ({}));
+        if (!res.ok || data.ok === false) {
+          harnessNotice.set(id, data.error || ('Could not ' + kind + ' ' + id));
+        } else {
+          versionDrafts.delete(id);
+          harnessNotice.delete(id);
+          toast(kind === 'uninstall' ? 'Uninstalled' : 'Installed', CHECK);
+        }
+      } catch (error) {
+        harnessNotice.set(id, String(error.message || error));
+      } finally {
+        harnessBusy.delete(id);
+      }
+      load();
+    };
+    for (const b of document.querySelectorAll('.h-install')) {
+      b.onclick = () => callLifecycle('install', b.dataset.agent, b);
+    }
+    for (const b of document.querySelectorAll('.h-update')) {
+      b.onclick = () => callLifecycle('update', b.dataset.agent, b);
+    }
+    for (const b of document.querySelectorAll('.h-uninstall')) {
+      b.onclick = () => confirmDialog({
+        title: 'Uninstall this harness?',
+        body: 'The managed executable is removed. Credentials stay, and any '
+          + 'baked fallback in this image remains usable.',
+        confirmLabel: 'Uninstall',
+        onConfirm: () => callLifecycle('uninstall', b.dataset.agent, b),
+      });
+    }
   };
 
   // ----------------------------------------------------------- sessions --

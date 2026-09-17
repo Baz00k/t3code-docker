@@ -1113,6 +1113,27 @@ a.tc-btn:hover {
   margin-left: auto;
 }
 
+/* The Agents card carries lifecycle controls beside sign-in: a version field
+   plus Install, or version plus Update/Uninstall, plus sign-in. They wrap
+   under the row on narrow cards rather than squeezing the name column. */
+.tc-row-actions--wrap {
+  flex-wrap: wrap;
+  justify-content: flex-end;
+  max-width: 100%;
+}
+
+.tc-input--sm {
+  height: 28px;
+  font-size: 12px;
+  padding-inline: 8px;
+}
+
+@media (max-width: 720px) {
+  .tc-input--sm {
+    height: 32px;
+  }
+}
+
 .tc-row-panel {
   flex: 1 0 100%;
 }

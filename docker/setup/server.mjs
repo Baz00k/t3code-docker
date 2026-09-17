@@ -95,126 +95,169 @@ const health = async () => {
   }
 };
 
-const which = async (bin) => {
-  try {
-    await run("sh", ["-c", `command -v ${bin}`]);
-    return true;
-  } catch {
-    return false;
+// --- managed harnesses ------------------------------------------------------
+//
+// One harness-management module owns exact-version install, state, locking and
+// executable resolution for the five supported harnesses (see
+// docs/toolchain/harness-api.md). The setup console and the `t3-harness` CLI
+// are both thin surfaces over it, so they report identical selections and
+// errors - no PATH workaround, no second installer.
+//
+// In the image the module lives at /opt/t3-harness/index.mjs (Dockerfile).
+// In a checkout it lives at docker/harness/index.mjs. T3_HARNESS_MODULE
+// overrides both, which is what the container tests use to pin the source.
+const HARNESS_CANDIDATES = [
+  process.env.T3_HARNESS_MODULE,
+  "/opt/t3-harness/index.mjs",
+  new URL("../harness/index.mjs", import.meta.url).href,
+  new URL("../../docker/harness/index.mjs", import.meta.url).href,
+].filter(Boolean);
+const PROVIDER_CANDIDATES = [
+  process.env.T3_PROVIDER_MODULE,
+  "/opt/t3-provider/index.mjs",
+  new URL("../provider-integration/index.mjs", import.meta.url).href,
+  new URL("../../docker/provider-integration/index.mjs", import.meta.url).href,
+].filter(Boolean);
+
+let harnessManager = null;
+async function loadHarness() {
+  if (harnessManager) return harnessManager;
+  let lastError = null;
+  for (const candidate of HARNESS_CANDIDATES) {
+    try {
+      const module = await import(candidate);
+      if (typeof module?.createHarnessManager !== "function") continue;
+      harnessManager = module.createHarnessManager();
+      return harnessManager;
+    } catch (error) {
+      lastError = error;
+    }
   }
+  throw new Error(
+    `harness manager unavailable: ${String(lastError?.message ?? lastError ?? "not found")}`,
+  );
+}
+
+async function loadProviderIntegration() {
+  let lastError = null;
+  for (const candidate of PROVIDER_CANDIDATES) {
+    try {
+      const module = await import(candidate);
+      if (typeof module?.createProviderIntegration !== "function") continue;
+      return module;
+    } catch (error) {
+      lastError = error;
+    }
+  }
+  throw new Error(
+    `provider integration unavailable: ${String(lastError?.message ?? lastError ?? "not found")}`,
+  );
+}
+
+// After Install/Update/Uninstall, T3 must pick up the new `binaryPath`
+// selection. T3 watches its settings file live, so one `sync()` reaches a
+// running server without a restart. This is the notification interface -
+// never a second settings writer (see docs/toolchain/provider-integration.md).
+const syncManagedProviders = async () => {
+  const harness = await loadHarness();
+  const { createProviderIntegration } = await loadProviderIntegration();
+  const integration = createProviderIntegration({ harness });
+  return integration.sync();
 };
 
-// Ask each CLI what it thinks rather than guessing from a file on disk. A
-// credentials file is only one of the ways these tools are authenticated -
-// ANTHROPIC_API_KEY and CLAUDE_CODE_OAUTH_TOKEN leave nothing on disk at all,
-// and T3 Code honours those, which is why the two screens used to disagree.
-const HARNESSES = [
-  { id: "claude", name: "Claude Code", bin: "claude",
-    probe: ["claude", "auth", "status", "--json"],
-    reads: ({ stdout }) => JSON.parse(stdout).loggedIn === true },
-  { id: "codex", name: "Codex", bin: "codex",
-    // Codex prints both verdicts on stderr, and exits 1 for "Not logged in".
-    probe: ["codex", "login", "status"],
-    reads: ({ stdout, stderr }) => /^logged in/i.test((stderr + stdout).trim()) },
-  { id: "opencode", name: "OpenCode", bin: "opencode",
-    cred: `${process.env.HOME}/.local/share/opencode/auth.json` },
-  { id: "cursor", name: "Cursor", bin: "cursor-agent",
-    probe: ["cursor-agent", "status", "--format", "json"],
-    reads: ({ stdout }) => JSON.parse(stdout).isAuthenticated === true },
-  { id: "grok", name: "Grok Build", bin: "grok", detect: () => grokSignedIn() },
-];
-
-/**
- * Grok ships no status command, so read its model listing the way T3 Code does:
- * an xAI key in the environment wins, otherwise `grok models` says which it is.
- *
- * Not from its credentials file. Grok documents one - `jq -r '."https://
- * accounts.x.ai/sign-in".key' ~/.grok/auth.json` - but a file of exactly that
- * shape still leaves the CLI reporting "You are not authenticated", so the file
- * existing proves nothing. Asking costs 287ms and is the truth.
- */
-const grokSignedIn = async () => {
-  if (process.env.XAI_API_KEY?.trim()) return true;
-  let text;
+// Probing spawns a process per agent, so the manager caches sign-in verdicts
+// briefly (10s per executable+version). A sign-in that changes credentials
+// must clear that verdict, or the panel shows a stale answer after acting.
+const forgetSignInState = (id) => {
   try {
-    const { stdout, stderr } = await run("grok", ["models"], { timeout: PROBE_TIMEOUT_MS, maxBuffer: 1024 * 1024 });
-    text = stdout + stderr;
-  } catch (error) {
-    text = (error?.stdout ?? "") + (error?.stderr ?? "");
-  }
-  // "You are using XAI_API_KEY." is its own phrasing for a key it picked up.
-  if (/you are logged in|using XAI_API_KEY/i.test(text)) return true;
-  if (/not authenticated|not logged in/i.test(text)) return false;
+    harnessManager?.invalidateAuth?.(id);
+  } catch { /* a missing manager has nothing cached */ }
+};
+
+// Last definite sign-in answer per agent. Five CLIs probed at once contend
+// for the box, and the slowest two - Claude and Cursor - can miss a deadline
+// even though each takes well under it alone. A missed deadline is not news
+// about anyone's credentials, so it must not turn a known "Not signed in"
+// into "not readable".
+const lastKnown = new Map();
+const stableAuth = (id, value) => {
+  if (value === null) return lastKnown.has(id) ? lastKnown.get(id) : null;
+  lastKnown.set(id, value);
+  return value;
+};
+
+// The Agents card shape. `installed`/`signedIn` keep their historical names
+// so older clients keep working; the managed facts alongside them are what
+// the card actually renders: exact versions, runnable state, the operation in
+// flight, the failure that stopped the last one, and the baked fallback that
+// remains after an Uninstall. Auth comes from the manager's bounded probe of
+// the managed executable - never from a PATH search.
+const toPublicHarness = (facts) => ({
+  id: facts.id,
+  name: facts.name,
+  installed: facts.installed,
+  runnable: facts.runnable,
+  signedIn: stableAuth(facts.id, facts.authenticated),
+  version: facts.installedVersion ?? facts.recordedVersion ?? null,
+  installedVersion: facts.installedVersion,
+  recordedVersion: facts.recordedVersion,
+  verifiedVersion: facts.verifiedVersion ?? null,
+  configuredVersion: facts.configuredVersion ?? null,
+  executable: facts.executable,
+  configured: facts.configured,
+  minimumVersion: facts.minimumVersion ?? null,
+  minimumSatisfied: facts.minimumSatisfied ?? null,
+  supported: facts.supported,
+  failed: facts.failed,
+  failure: facts.failure,
+  operation: facts.operation,
+  operationState: facts.operationState,
+  inProgress: facts.inProgress,
+  managedVersions: facts.managedVersions ?? [],
+  bakedFallback: facts.bakedFallback,
+  credentialsPresent: facts.credentials?.present ?? false,
+  canSignIn: Boolean(AGENTS[facts.id]?.signin),
+  canSetKey: Boolean(AGENTS[facts.id]?.apiKey),
+  keyKind: AGENTS[facts.id]?.apiKey?.kind ?? null,
+});
+
+const harnessStatus = async (options = {}) => {
+  const harness = await loadHarness();
+  const { harnesses } = await harness.status(
+    options.authenticate === false ? { authenticate: false } : {},
+  );
+  return harnesses.map(toPublicHarness);
+};
+
+// The absolute managed executable when one is runnable, else the baked
+// fallback the transition still ships, else null. Sign-in and the API-key
+// stdin flow run through this, so credentials land where the executable T3
+// launches reads them.
+const managedExecutable = async (id) => {
+  try {
+    const harness = await loadHarness();
+    const facts = await harness.resolve(id, { authenticate: false });
+    if (facts?.runnable && facts?.executable) return facts.executable;
+    if (facts?.bakedFallback?.present && facts?.bakedFallback?.executable) {
+      return facts.bakedFallback.executable;
+    }
+  } catch { /* fall through to the PATH fallback */ }
   return null;
 };
 
-// Probing spawns a process per agent, so cache briefly: the page polls status
-// every 15s and several browsers may watch at once. Anything that changes a
-// sign-in clears this, so the panel never shows a stale verdict after acting.
-let probeCache = { at: 0, value: null };
-const PROBE_TTL_MS = 10_000;
-const PROBE_TIMEOUT_MS = 20_000;
-// Last definite answer per agent. Five CLIs probed at once contend for the box,
-// and the slowest two - Claude and Cursor - can miss the deadline even though
-// each takes well under it alone. A missed deadline is not news about anyone's
-// credentials, so it must not turn a known "Not signed in" into "not readable".
-const lastKnown = new Map();
-const forgetSignInState = () => { probeCache = { at: 0, value: null }; };
+const HARNESS_IDS = new Set(["claude", "codex", "opencode", "grok", "cursor"]);
 
-const signedInState = async (h) => {
-  if (h.detect) return h.detect();
-  if (!h.probe) {
-    const { existsSync } = await import("node:fs");
-    return h.cred ? existsSync(h.cred) : null;
+const lifecycleHttpStatus = (code) => {
+  switch (code) {
+    case "ok": return 200;
+    case "busy": return 409;
+    case "unknown-harness": return 404;
+    case "invalid-version":
+    case "version-below-minimum":
+    case "not-installed":
+    case "unsupported-arch": return 400;
+    default: return 500;
   }
-  const [bin, ...args] = h.probe;
-  let out;
-  try {
-    // A hung CLI must not hang the status endpoint.
-    out = await run(bin, args, { timeout: PROBE_TIMEOUT_MS, maxBuffer: 1024 * 1024 });
-  } catch (error) {
-    // Signed out is how these tools spend most of their life, and both Claude
-    // and Codex report it with exit 1 while still printing the answer - so
-    // read the output before calling the probe failed. A missing binary or a
-    // timeout leaves nothing to read and stays unknown.
-    out = { stdout: error?.stdout ?? "", stderr: error?.stderr ?? "" };
-    if ((out.stdout + out.stderr).trim() === "") return null;
-  }
-  try {
-    return h.reads(out);
-  } catch {
-    // Unparseable output is not evidence of being signed out; null renders as
-    // "not readable", which is honest.
-    return null;
-  }
-};
-
-/** signedInState, but a probe that could not answer keeps the last real one. */
-const stableSignedIn = async (h) => {
-  const now = await signedInState(h);
-  if (now === null) return lastKnown.has(h.id) ? lastKnown.get(h.id) : null;
-  lastKnown.set(h.id, now);
-  return now;
-};
-
-const harnessStatus = async () => {
-  if (probeCache.value && Date.now() - probeCache.at < PROBE_TTL_MS) return probeCache.value;
-  // In parallel: serially these add up to seconds, and the slowest alone is
-  // most of the wait.
-  const value = await Promise.all(HARNESSES.map(async (h) => {
-    const installed = await which(h.bin);
-    return {
-      id: h.id,
-      name: h.name,
-      installed,
-      signedIn: installed ? await stableSignedIn(h) : null,
-      canSignIn: Boolean(AGENTS[h.id]?.signin),
-      canSetKey: Boolean(AGENTS[h.id]?.apiKey),
-      keyKind: AGENTS[h.id]?.apiKey?.kind ?? null,
-    };
-  }));
-  probeCache = { at: Date.now(), value };
-  return value;
 };
 
 /**
@@ -296,12 +339,16 @@ const status = async () => {
       return fallback;
     }
   };
-  const [server, harnesses, pairings, sessions] = await Promise.all([
+  const [server, harnessResult, pairings, sessions] = await Promise.all([
     attempt("server health", health, { ok: false, detail: "health check failed" }),
-    attempt("agent probes", harnessStatus, []),
+    attempt("agent probes", () => harnessLifecycleStatus(true), { harnesses: [], degraded: [] }),
     attempt("pairing links", () => listJson(["auth", "pairing", "list", "--json"]), []),
     attempt("paired devices", () => listJson(["auth", "session", "list", "--json"]), []),
   ]);
+  const harnesses = harnessResult?.harnesses ?? [];
+  for (const entry of harnessResult?.degraded ?? []) {
+    degraded.push({ what: `harness ${entry.what}`, error: String(entry.error ?? "").slice(0, 200) });
+  }
 
   return {
     server,
@@ -427,15 +474,25 @@ const SESSION_TTL_MS = 15 * 60 * 1000;
 const SUBMIT_TTL_MS = 90 * 1000;
 const TERMINAL_STATES = new Set(["done", "failed", "cancelled"]);
 
-const startSignin = (agentId) => {
+const shellQuote = (value) =>
+  /^[A-Za-z0-9_@%+=:,./-]+$/.test(String(value ?? ""))
+    ? String(value ?? "")
+    : `'${String(value ?? "").replace(/'/g, `'\\''`)}'`;
+
+const startSignin = async (agentId) => {
   const agent = AGENTS[agentId];
   if (!agent?.signin) throw new Error(`${agentId} has no browser sign-in`);
-  const { argv, pty, env, expectsCode } = agent.signin;
+  const { argv: baseArgv, pty, env, expectsCode } = agent.signin;
 
-  // argv is fixed per agent, never built from request input, so the shell that
-  // `script` needs cannot be steered from outside.
+  // Run the sign-in through the managed executable when one is runnable, so
+  // credentials land where the harness T3 launches reads them. Otherwise fall
+  // back to the baked harness on PATH, which is what transitional images ship.
+  // argv stays fixed per agent - only the binary is resolved, never built from
+  // request input - so the shell that `script` needs cannot be steered.
+  const managed = await managedExecutable(agentId);
+  const argv = managed ? [managed, ...baseArgv.slice(1)] : [...baseArgv];
   const [cmd, args] = pty
-    ? ["script", ["-qec", argv.join(" "), "/dev/null"]]
+    ? ["script", ["-qec", argv.map(shellQuote).join(" "), "/dev/null"]]
     : [argv[0], argv.slice(1)];
 
   const child = spawn(cmd, args, {
@@ -484,7 +541,7 @@ const startSignin = (agentId) => {
   child.on("error", (err) => { session.state = "failed"; session.error = String(err.message); });
   child.on("close", (code) => {
     // Either way the CLI may have written credentials, so re-probe next time.
-    forgetSignInState();
+    forgetSignInState(agentId);
     // A verdict already reached wins. We kill the child ourselves once the
     // output says the code was rejected, and `script` reports that kill as a
     // clean exit - which used to overwrite "failed" with "done" and tell
@@ -508,21 +565,29 @@ const startSignin = (agentId) => {
   // Waiting for the process to exit is the wrong finish line. These CLIs are
   // terminal UIs: several print their result and stay up. The question is not
   // "did it exit" but "is this agent signed in now", and we already have a way
-  // to ask that, so ask it - and keep the deadline for the case where nothing
-  // ever becomes true.
-  const harness = HARNESSES.find((h) => h.id === agentId);
+  // to ask that - the manager's bounded probe of the managed executable - so
+  // ask it, and keep the deadline for the case where nothing ever becomes true.
+  const probeManagedAuth = async () => {
+    try {
+      const harness = await loadHarness();
+      const facts = await harness.resolve(agentId, { authenticate: true });
+      return facts?.authenticated ?? null;
+    } catch {
+      return null;
+    }
+  };
   // Only a transition counts. Someone signing in again while already signed in
   // - to switch accounts, say - would otherwise see the attempt declared done
   // before they had touched it.
   let wasSignedIn = null;
-  if (harness) signedInState(harness).then((v) => { wasSignedIn = v; }).catch(() => {});
+  probeManagedAuth().then((v) => { wasSignedIn = v; }).catch(() => {});
   const watchSession = setInterval(async () => {
     const live = sessions.get(id);
     if (!live || TERMINAL_STATES.has(live.state)) return;
-    if (harness && wasSignedIn !== true && (await signedInState(harness)) === true) {
+    if (wasSignedIn !== true && (await probeManagedAuth()) === true) {
       try { live.child.kill(); } catch {}
       live.state = "done";
-      forgetSignInState();
+      forgetSignInState(agentId);
       return;
     }
     if (live.state !== "submitted") return;
@@ -548,8 +613,12 @@ const setApiKey = async (agentId, key, providerId) => {
   if (!key || key.length > 500) throw new Error("Enter a key");
 
   if (agent.apiKey.kind === "stdin") {
+    const managed = await managedExecutable(agentId);
+    const [bin, ...rest] = managed
+      ? [managed, ...agent.apiKey.argv.slice(1)]
+      : agent.apiKey.argv;
     await new Promise((resolve, reject) => {
-      const child = spawn(agent.apiKey.argv[0], agent.apiKey.argv.slice(1), {
+      const child = spawn(bin, rest, {
         env: process.env, stdio: ["pipe", "pipe", "pipe"],
       });
       let out = "";
@@ -560,7 +629,7 @@ const setApiKey = async (agentId, key, providerId) => {
         code === 0 ? resolve() : reject(new Error(stripAnsi(out).trim().slice(-200) || "login failed")));
       child.stdin.end(`${key}\n`);
     });
-    forgetSignInState();
+    forgetSignInState(agentId);
     return { ok: true };
   }
 
@@ -577,7 +646,7 @@ const setApiKey = async (agentId, key, providerId) => {
     try { current = JSON.parse(await readFile(`${dir}/auth.json`, "utf8")); } catch {}
     current[providerId] = { type: "api", key };
     await writeFile(`${dir}/auth.json`, JSON.stringify(current, null, 2), { mode: 0o600 });
-    forgetSignInState();
+    forgetSignInState(agentId);
     return { ok: true };
   }
   throw new Error("unsupported");
@@ -925,8 +994,66 @@ const portsStatus = async () => ({
   tunnels: [...tunnels.values()].map(publicTunnel),
 });
 
+// --- harness lifecycle ------------------------------------------------------
+//
+// One shared manager backs the Agents card and the `t3-harness` CLI, so both
+// report identical selections and errors. Reads never install: status and
+// resolve run `mise ls` plus bounded probes only. Mutations are explicit,
+// authenticated POSTs that resolve `latest` to an exact version, record it,
+// verify the executable runs, and then notify T3 through a single
+// provider-integration `sync()` - never a second settings writer.
+//
+// Long operations outlive HTTP requests: mise installs take minutes, so the
+// UI polls GET /harnesses (or /status) for `inProgress`/`operationState`
+// rather than holding one request. Auth status is never inferred from install
+// success; it stays whatever the bounded probe reports.
+const harnessLifecycleStatus = async (authenticate = true) => {
+  const harness = await loadHarness();
+  const { harnesses, degraded } = await harness.status(
+    authenticate === false ? { authenticate: false } : {},
+  );
+  return { harnesses: harnesses.map(toPublicHarness), degraded };
+};
+
+const runLifecycle = async (kind, input) => {
+  const rawId = input?.id ?? input?.agent ?? "";
+  const id = String(rawId ?? "").trim();
+  if (!HARNESS_IDS.has(id)) {
+    return {
+      http: 404,
+      body: { ok: false, code: "unknown-harness", error: `unknown harness: ${String(rawId ?? "")}` },
+    };
+  }
+  const rawVersion = input?.version;
+  const version = rawVersion === undefined || rawVersion === null || String(rawVersion).trim() === ""
+    ? undefined
+    : String(rawVersion).trim();
+  const harness = await loadHarness();
+  let result;
+  if (kind === "install") result = await harness.install(id, version ? { version } : {});
+  else if (kind === "update") result = await harness.update(id, version ? { version } : {});
+  else result = await harness.uninstall(id);
+  let sync = null;
+  if (result?.ok) {
+    try {
+      sync = await syncManagedProviders();
+    } catch (error) {
+      sync = { ok: false, error: String(error?.message ?? error).slice(0, 200) };
+    }
+  }
+  const body = {
+    ok: Boolean(result?.ok),
+    code: result?.code ?? "failed",
+    ...(result?.error ? { error: result.error } : {}),
+    harness: result?.harness ? toPublicHarness(result.harness) : null,
+    ...(sync ? { sync } : {}),
+  };
+  return { http: lifecycleHttpStatus(result?.code ?? "failed"), body };
+};
+
 const ROUTES = ["/login", "/status", "/pair", "/revoke", "/ports",
   "/ports/expose", "/ports/unexpose",
+  "/harnesses/install", "/harnesses/update", "/harnesses/uninstall", "/harnesses",
   "/auth/apikey", "/auth/signin", "/auth/session", "/auth/code", "/auth/cancel",
   "/providers"];
 
@@ -1007,6 +1134,34 @@ const server = createServer(async (req, res) => {
 
     if (route === "/status") return sendJson(res, 200, await status());
 
+    if (req.method === "GET" && route === "/harnesses") {
+      try {
+        const url = new URL(req.url ?? "/", "http://x");
+        const only = (url.searchParams.get("id") ?? "").trim();
+        const authenticate = url.searchParams.get("authenticate") !== "false"
+          && url.searchParams.get("authenticate") !== "0";
+        const { harnesses, degraded } = await harnessLifecycleStatus(authenticate);
+        if (only) {
+          const found = harnesses.find((h) => h.id === only);
+          if (!found) return sendJson(res, 404, { ok: false, code: "unknown-harness", error: `unknown harness: ${only}` });
+          return sendJson(res, 200, { harness: found, degraded });
+        }
+        return sendJson(res, 200, { harnesses, degraded });
+      } catch (error) {
+        return sendJson(res, 500, { error: String(error?.message ?? error) });
+      }
+    }
+    if (req.method === "POST" && (route === "/harnesses/install" || route === "/harnesses/update" || route === "/harnesses/uninstall")) {
+      try {
+        const kind = route.endsWith("/install") ? "install" : route.endsWith("/update") ? "update" : "uninstall";
+        const input = JSON.parse((await readBody(req)) || "{}");
+        const { http, body } = await runLifecycle(kind, input);
+        return sendJson(res, http, body);
+      } catch (error) {
+        return sendJson(res, 400, { error: String(error?.message ?? error) });
+      }
+    }
+
     if (req.method === "GET" && route === "/ports") {
       return sendJson(res, 200, await portsStatus());
     }
@@ -1047,7 +1202,7 @@ const server = createServer(async (req, res) => {
     if (req.method === "POST" && route === "/auth/signin") {
       try {
         const input = JSON.parse((await readBody(req)) || "{}");
-        return sendJson(res, 200, publicSession(startSignin(input.agent)));
+        return sendJson(res, 200, publicSession(await startSignin(input.agent)));
       } catch (error) {
         return sendJson(res, 400, { error: String(error?.message ?? error) });
       }
