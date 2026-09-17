@@ -114,11 +114,15 @@ host_arch() {
 # --- local mode -------------------------------------------------------------
 
 # Uncompressed bytes of every layer in a `docker save` archive. The modern OCI
-# layout stores gzipped blobs under blobs/sha256/; the legacy layout stores an
+# layout stores blobs under blobs/sha256/; the legacy layout stores an
 # already-uncompressed `<id>/layer.tar` per layer. `manifest.json` lists the
-# layers in order in both layouts.
+# layers in order in both layouts. A blob may be gzipped (the registry artifact
+# passed through) or the uncompressed layer tar (a local store that does not
+# compress), so the gzip path falls back to the size in the tar header - a
+# failed gunzip closes the pipe and truncates the extract, which is how this
+# used to report 0 on those runners.
 save_unpacked_bytes() {
-  local save="$1" ref="$2" layers layer total=0
+  local save="$1" ref="$2" layers layer total=0 stored unpacked
   layers="$(tar -xOf "$save" manifest.json \
     | jq -r --arg ref "$ref" \
         '([.[] | select((.RepoTags // []) | index($ref))][0] // .[0]).Layers[]')"
@@ -126,8 +130,14 @@ save_unpacked_bytes() {
     [ -n "$layer" ] || continue
     if [ "${layer##*.}" = tar ]; then
       total=$((total + $(tar -xOf "$save" "$layer" | wc -c)))
+      continue
+    fi
+    stored="$(tar -tvf "$save" "$layer" 2>/dev/null | awk '{print $3}' | head -1)"
+    unpacked="$(tar -xOf "$save" "$layer" 2>/dev/null | gzip -dc 2>/dev/null | wc -c)"
+    if [ "${unpacked:-0}" -gt 0 ]; then
+      total=$((total + unpacked))
     else
-      total=$((total + $(tar -xOf "$save" "$layer" | gzip -dc 2>/dev/null | wc -c)))
+      total=$((total + ${stored:-0}))
     fi
   done <<< "$layers"
   printf '%s' "$total"
