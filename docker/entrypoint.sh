@@ -24,8 +24,11 @@ T3_HOME=/home/t3
 # happens to resolve to. Overridable for tests; see docs/toolchain/infrastructure.md.
 : "${T3_INFRA_NODE:=/usr/local/bin/node}"
 : "${T3_INFRA_LAUNCHER:=/usr/local/bin/t3-admin}"
+# Provider integration: maps the harness manager's selection onto T3's
+# per-provider `binaryPath`. See docs/toolchain/provider-integration.md.
+: "${T3_PROVIDER_CLI:=/opt/t3-provider/cli.mjs}"
 export T3CODE_HOME T3CODE_HOST T3CODE_PORT T3_WORKSPACE T3_SETUP_PORT
-export T3_INFRA_NODE T3_INFRA_LAUNCHER
+export T3_INFRA_NODE T3_INFRA_LAUNCHER T3_PROVIDER_CLI
 
 # Ownership migration is recorded here before anything else changes. The state
 # directory is the one path every deployment mounts, so a marker written there
@@ -270,6 +273,25 @@ report_persistence() {
 
 persist_agent_credentials
 report_persistence
+
+# Hand T3 the harness manager's choice of executable. T3 watches its settings
+# file and re-reads it live, so a managed Install/Update/Uninstall reaches the
+# running server through the same write the setup console triggers. A missing
+# or degraded mise is not fatal: T3 keeps its own defaults and the transitional
+# baked harnesses stay usable until the product switch.
+sync_managed_providers() {
+  [ -r "$T3_PROVIDER_CLI" ] || return 0
+  [ -x "$T3_INFRA_NODE" ] || return 0
+  local out
+  if out="$("$T3_INFRA_NODE" "$T3_PROVIDER_CLI" sync 2>&1)"; then
+    log "managed provider selections: ${out}"
+  else
+    log "WARNING: could not apply managed harness selections to T3 settings"
+    log "         ${out}"
+  fi
+}
+
+sync_managed_providers
 
 # The setup service exists for one job: minting a pairing link on demand,
 # without a shell in the container and without a restart. Everything after

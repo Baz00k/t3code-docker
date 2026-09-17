@@ -263,6 +263,11 @@ RUN set -eux; \
 
 COPY docker/entrypoint.sh /usr/local/bin/entrypoint.sh
 COPY docker/bin/ /usr/local/bin/
+# Plain ESM modules shared by the setup service, the entrypoint and the shell
+# helpers: the harness manager owns install/resolve, and the provider
+# integration turns its selection into T3's per-provider `binaryPath`.
+COPY docker/harness/ /opt/t3-harness/
+COPY docker/provider-integration/ /opt/t3-provider/
 COPY docker/setup/ /opt/t3-setup/
 COPY examples/ /opt/examples/
 # T3 Code's client has no link to the setup console, so a fresh install that
