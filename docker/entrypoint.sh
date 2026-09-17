@@ -19,7 +19,13 @@ T3_HOME=/home/t3
 : "${T3_SETUP_ENABLED:=1}"
 : "${T3_SETUP_PORT:=3774}"
 : "${T3_PERSIST_AGENT_CREDENTIALS:=1}"
+# The image's own runtime. T3 and the setup service run under the image Node
+# against the root-owned T3 bundle, never through whatever `node`/`t3` PATH
+# happens to resolve to. Overridable for tests; see docs/toolchain/infrastructure.md.
+: "${T3_INFRA_NODE:=/usr/local/bin/node}"
+: "${T3_INFRA_LAUNCHER:=/usr/local/bin/t3-admin}"
 export T3CODE_HOME T3CODE_HOST T3CODE_PORT T3_WORKSPACE T3_SETUP_PORT
+export T3_INFRA_NODE T3_INFRA_LAUNCHER
 
 # --- privileged half: fix uids, then re-exec as the unprivileged user --------
 if [ "$(id -u)" -eq 0 ]; then
@@ -92,6 +98,12 @@ if ! mkdir -p "$T3CODE_HOME" 2>/dev/null || [ ! -w "$T3CODE_HOME" ]; then
   exit 1
 fi
 
+# Establish the user-only tool environment before anything is launched, so the
+# server, the setup service and the terminals T3 opens all inherit it. The
+# fragment returns early for root; this half is already the unprivileged user.
+# shellcheck source=/dev/null
+[ -r /etc/profile.d/t3-user-env.sh ] && . /etc/profile.d/t3-user-env.sh
+
 if [ "${1:-}" != "t3-serve" ]; then
   exec "$@"
 fi
@@ -103,7 +115,7 @@ register_projects() {
 
   local dir
   if [ -e "${T3_WORKSPACE}/.git" ]; then
-    t3 project add "$T3_WORKSPACE" >/dev/null 2>&1 \
+    "$T3_INFRA_LAUNCHER" project add "$T3_WORKSPACE" >/dev/null 2>&1 \
       && log "registered project ${T3_WORKSPACE}" || true
     return 0
   fi
@@ -112,7 +124,7 @@ register_projects() {
     [ -d "$dir" ] || continue
     [ -e "${dir}.git" ] || continue
     dir="${dir%/}"
-    t3 project add "$dir" >/dev/null 2>&1 \
+    "$T3_INFRA_LAUNCHER" project add "$dir" >/dev/null 2>&1 \
       && log "registered project ${dir}" || true
   done
 }
@@ -202,7 +214,7 @@ start_setup_service() {
   [ -f /opt/t3-setup/server.mjs ] || return 0
 
   if [ -z "${T3_SETUP_KEY:-}" ]; then
-    T3_SETUP_KEY="$(node -e 'console.log(require("crypto").randomBytes(16).toString("hex"))')"
+    T3_SETUP_KEY="$("$T3_INFRA_NODE" -e 'console.log(require("crypto").randomBytes(16).toString("hex"))')"
     log "T3_SETUP_KEY was not set; generated one for this container:"
     log "    ${T3_SETUP_KEY}"
     log "    Set T3_SETUP_KEY yourself to keep it stable across recreates."
@@ -221,7 +233,8 @@ start_setup_service() {
 
   (
     while :; do
-      node /opt/t3-setup/server.mjs || log "setup service exited; restarting in 5s"
+      "$T3_INFRA_NODE" /opt/t3-setup/server.mjs \
+        || log "setup service exited; restarting in 5s"
       sleep 5
     done
   ) &
@@ -263,7 +276,7 @@ fi
 log "note: the token in the server banner below expires in 5 minutes and is"
 log "      addressed to this container - use t3-pair for a link that lasts"
 
-exec t3 serve \
+exec "$T3_INFRA_LAUNCHER" serve \
   --host "$T3CODE_HOST" \
   --port "$T3CODE_PORT" \
   "$@" \

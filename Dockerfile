@@ -125,11 +125,28 @@ RUN set -eux; \
     groupadd -g "$T3_GID" t3; \
     useradd -m -u "$T3_UID" -g "$T3_GID" -s /bin/bash t3
 
-# Global npm installs go somewhere the unprivileged user owns, so T3 Code's
-# "update provider" button and plain `npm i -g` both work at runtime.
-ENV NPM_CONFIG_PREFIX=/opt/npm-global
+# Mutable npm location. The baked harnesses and the browser MCP servers live
+# here so T3 Code's own "update provider" button and plain `npm i -g` keep
+# working at runtime. This is deliberately not T3 Code's own prefix: the server
+# is image infrastructure (T3_INFRA_PREFIX below) and a writable prefix it
+# shared with user packages could be used to rewrite the server itself.
 ENV PATH=/opt/npm-global/bin:$PATH
 RUN mkdir -p /opt/npm-global && chown -R t3:t3 /opt/npm-global
+
+# `npm i -g` as the unprivileged user has nowhere to write by default - npm's
+# system prefix (/usr/local) is root-owned. Point npm at the mutable prefix
+# through the user's own config instead of a process-wide NPM_CONFIG_PREFIX:
+# root's npm keeps using its root-owned prefix and creates no user-owned global
+# state, while a plain `docker exec -u t3 npm i -g ...` still works. A project
+# changing its own ~/.npmrc only redirects its own installs.
+RUN printf 'prefix=/opt/npm-global\n' > /home/t3/.npmrc \
+    && chown t3:t3 /home/t3/.npmrc
+
+# User-only tool environment (Go's GOPATH/bin today, mise and friends later).
+# Kept out of the image environment so root never has a user-controlled
+# directory on PATH.
+COPY docker/user-env.sh /etc/profile.d/t3-user-env.sh
+RUN chmod 0644 /etc/profile.d/t3-user-env.sh
 
 # ---------------------------------------------------------------------------
 # slim - T3 Code and the harnesses
@@ -145,11 +162,33 @@ ARG CODEX_VERSION=0.154.0
 ARG OPENCODE_VERSION=1.18.30
 ARG GROK_VERSION=1.0.30
 
+# T3 Code is image infrastructure. It installs into its own root-owned prefix
+# and is launched only through absolute paths - docker/bin/t3-admin passes the
+# entry module to the image Node - so nothing under a project, a mise shim, or
+# a user npm prefix can change which runtime the server runs.
+ENV T3_INFRA_PREFIX=/opt/t3 \
+    T3_INFRA_NODE=/usr/local/bin/node \
+    T3_INFRA_LAUNCHER=/usr/local/bin/t3-admin
+
 # node-pty has no Linux prebuilds and compiles here; build-essential and
 # python3 (installed above) are what make that work.
 RUN set -eux; \
-    npm install -g --no-audit --no-fund \
-        "t3@${T3_VERSION}" \
+    mkdir -p "$T3_INFRA_PREFIX"; \
+    npm install -g --no-audit --no-fund --prefix "$T3_INFRA_PREFIX" \
+        "t3@${T3_VERSION}"; \
+    npm cache clean --force; \
+    # Source maps are dead weight here (~140 MB across the image).
+    find "$T3_INFRA_PREFIX" -type f -name '*.map' -delete; \
+    # Root-owned and not group/other writable: the t3 user runs the server and
+    # must never be able to modify it.
+    chown -R root:root "$T3_INFRA_PREFIX"; \
+    chmod -R go-w "$T3_INFRA_PREFIX"
+
+# Harnesses stay in the mutable prefix, exactly as before. T3 Code's "update
+# provider" button installs into the prefix it discovers from each harness's
+# real path, so baked harnesses keep updating until the product switch.
+RUN set -eux; \
+    npm install -g --no-audit --no-fund --prefix /opt/npm-global \
         "@anthropic-ai/claude-code@${CLAUDE_CODE_VERSION}" \
         "@openai/codex@${CODEX_VERSION}" \
         "opencode-ai@${OPENCODE_VERSION}" \
@@ -190,8 +229,11 @@ COPY examples/ /opt/examples/
 # static shell - it probes for the console and hides itself when absent - and
 # patch.mjs fails the build if upstream moves the layout it relies on.
 COPY docker/t3-client/ /usr/local/share/t3-client/
-RUN node /usr/local/share/t3-client/patch.mjs
-RUN chmod +x /usr/local/bin/entrypoint.sh /usr/local/bin/t3-*
+RUN "$T3_INFRA_NODE" /usr/local/share/t3-client/patch.mjs
+# `t3` is the same immutable launcher under its user-facing name. /usr/local/bin
+# precedes the npm prefixes on PATH, so it always wins over a project shim.
+RUN chmod +x /usr/local/bin/entrypoint.sh /usr/local/bin/t3-* \
+    && ln -sfn t3-admin /usr/local/bin/t3
 
 ENV T3CODE_HOME=/home/t3/.t3 \
     T3CODE_HOST=0.0.0.0 \
@@ -245,10 +287,12 @@ RUN set -eux; \
     rm -rf /var/lib/apt/lists/*
 
 # Go - Debian's golang-go trails upstream, so take the official tarball.
+# GOPATH (and its bin directory) is user state, so it is set only for the t3
+# user by /etc/profile.d/t3-user-env.sh - never image-wide. Root's `go install`
+# then lands in /root/go rather than writing into the user's home.
 ARG GO_VERSION=1.27.1
 ENV GOROOT=/usr/local/go
-ENV GOPATH=/home/t3/go
-ENV PATH=/usr/local/go/bin:/home/t3/go/bin:$PATH
+ENV PATH=/usr/local/go/bin:$PATH
 RUN set -eux; \
     arch="$(dpkg --print-architecture)"; \
     case "$arch" in \
@@ -301,7 +345,7 @@ ENV CHROME_PATH=/usr/bin/chromium \
     PLAYWRIGHT_SKIP_BROWSER_DOWNLOAD=1 \
     PLAYWRIGHT_CHROMIUM_EXECUTABLE_PATH=/usr/bin/chromium
 RUN set -eux; \
-    npm install -g --no-audit --no-fund \
+    npm install -g --no-audit --no-fund --prefix /opt/npm-global \
         "chrome-devtools-mcp@${CHROME_DEVTOOLS_MCP_VERSION}" \
         "@playwright/mcp@${PLAYWRIGHT_MCP_VERSION}"; \
     npm cache clean --force; \

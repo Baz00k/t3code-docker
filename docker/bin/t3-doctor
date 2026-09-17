@@ -3,6 +3,9 @@
 # server is answering. Safe to run at any time; changes nothing.
 set -uo pipefail
 
+# T3 runs through the immutable image infrastructure, never a PATH resolution.
+: "${T3_INFRA_LAUNCHER:=/usr/local/bin/t3-admin}"
+
 # `docker exec` lands as root (the image sets no USER so the entrypoint can
 # remap uids). Step down so nothing here leaves root-owned files in the
 # state directory.
@@ -27,7 +30,7 @@ version_of() {
 }
 
 head_ "T3 Code"
-version_of t3 t3 --version
+version_of t3 "$T3_INFRA_LAUNCHER" --version
 printf '  %-22s %s\n' "state dir" "${T3CODE_HOME:-unset}"
 printf '  %-22s %s\n' "bind" "${T3CODE_HOST:-unset}:${T3CODE_PORT:-unset}"
 printf '  %-22s %s\n' "public URL" "${T3_PUBLIC_URL:-<unset - t3-pair will warn>}"

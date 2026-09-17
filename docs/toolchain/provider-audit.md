@@ -29,8 +29,10 @@ every claim below.
 
 ### Immutable T3 infrastructure
 
-- **Entry module:** `dist/bin.mjs`. In the transitional image this is installed
-  globally into `/opt/npm-global/lib/node_modules/t3/dist/bin.mjs`.
+- **Entry module:** `dist/bin.mjs`. TM-03 installs it into the root-owned
+  immutable prefix at `/opt/t3/lib/node_modules/t3/dist/bin.mjs`; it is no
+  longer part of the mutable `/opt/npm-global` prefix. See
+  [`infrastructure.md`](./infrastructure.md).
 - **Runtime:** the loaded Node must satisfy the engines range above. The image
   Node is what T3 and setup must run under; nothing under a project or mise
   toolchain may shadow it.
@@ -41,25 +43,24 @@ every claim below.
 
 ### Administrative call sites in this repository
 
-These are the places that invoke T3 by name (i.e. resolve it through `PATH`)
-and therefore must be pinned to absolute image infrastructure by TM-03:
+These were the places that invoked T3 by name (i.e. resolved it through `PATH`)
+and were therefore pinned to absolute image infrastructure by TM-03. Every call
+now goes through the immutable launcher (`/usr/local/bin/t3-admin`, also
+`/usr/local/bin/t3`) or the absolute image Node:
 
-| Call site | Invocation |
+| Call site | Invocation now |
 | --- | --- |
-| `docker/entrypoint.sh:106`, `:115` | `t3 project add ...` |
-| `docker/entrypoint.sh:266` | `exec t3 serve ...` |
-| `docker/bin/t3-pair:66` | `t3 auth pairing create --json ...` |
-| `docker/bin/t3-login:43` | `t3 connect` |
-| `docker/bin/t3-doctor:30` | `t3 --version` |
-| `docker/setup/server.mjs:74` | `run("t3", args, ...)` |
-| `scripts/smoke-test.sh:73` | `docker exec ... t3 --version` |
-| `scripts/smoke-test.sh:84` | hard-coded `/opt/npm-global/lib/node_modules/t3/dist/bin.mjs` |
-| `Dockerfile:130-131,151` | `NPM_CONFIG_PREFIX=/opt/npm-global`, `PATH`, `npm install -g t3@${T3_VERSION}` |
+| `docker/entrypoint.sh` | `"$T3_INFRA_LAUNCHER" project add ...`, `exec "$T3_INFRA_LAUNCHER" serve ...` |
+| `docker/entrypoint.sh` | `"$T3_INFRA_NODE" /opt/t3-setup/server.mjs` |
+| `docker/bin/t3-pair` | `"$T3_INFRA_LAUNCHER" auth pairing create --json ...` |
+| `docker/bin/t3-login` | `"$T3_INFRA_LAUNCHER" connect` |
+| `docker/bin/t3-doctor` | `"$T3_INFRA_LAUNCHER" --version` |
+| `docker/setup/server.mjs` | `run(T3_LAUNCHER, args, ...)` |
+| `scripts/smoke-test.sh` | bundle discovery from `T3_INFRA_PREFIX`, no longer `/opt/npm-global` |
+| `Dockerfile` | `npm install -g --prefix /opt/t3 t3@${T3_VERSION}`, root-owned and `go-w` |
 
-`docker/entrypoint.sh` resolves `t3` through `PATH` (`/opt/npm-global/bin`), and
-`scripts/smoke-test.sh` reaches the bundle at the same absolute prefix. Any
-separation of T3 infrastructure from the mutable user npm prefix must update all
-of the above together.
+Details, including the launcher interface and the mutable user npm prefix, are in
+[`infrastructure.md`](./infrastructure.md).
 
 ## Provider Matrix
 
@@ -314,8 +315,10 @@ curl -fsSL https://downloads.cursor.com/lab/<version>/linux/x64/agent-cli-packag
 ## Handoff
 
 - **Immutable entry discovery:** T3's package `bin.t3` (`dist/bin.mjs`); the
-  image path is `/opt/npm-global/lib/node_modules/t3/dist/bin.mjs`. Launch it
-  with the absolute image Node, never through a mise shim.
+  image path is `/opt/t3/lib/node_modules/t3/dist/bin.mjs`. Launch it with the
+  absolute image Node through the `/usr/local/bin/t3-admin` launcher, never
+  through a mise shim or an `env node` shebang; see
+  [`infrastructure.md`](./infrastructure.md).
 - **Provider adapter contract:** one concrete absolute executable per instance
   via `<Provider>Settings.binaryPath`; optional per-instance home
   (`CLAUDE_CONFIG_DIR`, `CODEX_HOME`). Probes and launches use it on Linux

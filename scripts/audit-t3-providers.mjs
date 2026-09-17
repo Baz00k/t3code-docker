@@ -190,7 +190,7 @@ function candidateGlobalRoots() {
     // npm may be absent in a minimal runtime; the fixed roots below still apply.
   }
   roots.push(
-    "/opt/npm-global/lib/node_modules/t3",
+    "/opt/t3/lib/node_modules/t3",
     "/usr/local/lib/node_modules/t3",
     "/usr/lib/node_modules/t3",
   );

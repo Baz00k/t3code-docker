@@ -81,7 +81,16 @@ done
 # inside T3 Code without anything here noticing, so read the floor back out of
 # the bundle and hold the image to it. If upstream raises a minimum, this fails
 # on the next build rather than in someone's session.
-T3_BUNDLE=/opt/npm-global/lib/node_modules/t3/dist/bin.mjs
+# T3 now lives in its own root-owned immutable prefix, not the mutable npm
+# prefix the harnesses share. Read the prefix back from the image so there is
+# one source of truth rather than a second hard-coded path to drift from.
+T3_PREFIX="$(docker exec "$NAME" printenv T3_INFRA_PREFIX 2>/dev/null || true)"
+[ -n "$T3_PREFIX" ] || T3_PREFIX=/opt/t3
+T3_BUNDLE="${T3_PREFIX}/lib/node_modules/t3/dist/bin.mjs"
+check "the immutable T3 bundle is where the image says it is" \
+  "docker exec $NAME test -f $T3_BUNDLE"
+check "T3 is not installed in the mutable npm prefix" \
+  "docker exec $NAME test ! -e /opt/npm-global/lib/node_modules/t3"
 
 # Compares with sort -V: passes when installed >= required.
 version_at_least() {

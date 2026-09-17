@@ -13,8 +13,10 @@
 //     node docker/t3-client/patch.mjs
 import { readFileSync, writeFileSync } from "node:fs";
 
+// T3 lives in the root-owned immutable prefix, not the mutable npm prefix.
+const T3_PREFIX = process.env.T3_INFRA_PREFIX || "/opt/t3";
 const SHELL = process.env.T3_CLIENT_SHELL
-  || "/opt/npm-global/lib/node_modules/t3/dist/client/index.html";
+  || `${T3_PREFIX}/lib/node_modules/t3/dist/client/index.html`;
 const PILL = process.env.T3_SETUP_PILL
   || "/usr/local/share/t3-client/setup-pill.js";
 const MARKER = "t3-setup-pill";

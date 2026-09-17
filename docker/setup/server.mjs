@@ -70,8 +70,12 @@ const throttle = (ip) => {
 // on something - hangs /status forever, and the whole console sits on
 // skeletons with no way to tell why.
 const T3_TIMEOUT_MS = 15_000;
+// T3 Code is image infrastructure: launch it by absolute path through the
+// immutable launcher rather than resolving `t3` through PATH. Anything on PATH
+// - a project shim, a mise shim - would otherwise be able to answer.
+const T3_LAUNCHER = process.env.T3_INFRA_LAUNCHER || "/usr/local/bin/t3-admin";
 const t3 = (args) =>
-  run("t3", args, {
+  run(T3_LAUNCHER, args, {
     env: process.env,
     maxBuffer: 4 * 1024 * 1024,
     timeout: T3_TIMEOUT_MS,

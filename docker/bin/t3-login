@@ -9,6 +9,9 @@
 # This runs the login as t3 so everything lands where the server expects it.
 set -euo pipefail
 
+# T3 runs through the immutable image infrastructure, never a PATH resolution.
+: "${T3_INFRA_LAUNCHER:=/usr/local/bin/t3-admin}"
+
 if [ "$(id -u)" -eq 0 ] && command -v gosu >/dev/null 2>&1 && id t3 >/dev/null 2>&1; then
   exec gosu t3 "$0" "$@"
 fi
@@ -40,7 +43,7 @@ case "$harness" in
   opencode) cmd=(opencode auth login) ;;
   cursor)   cmd=(agent login) ;;
   grok)     cmd=(grok login) ;;
-  connect)  cmd=(t3 connect) ;;
+  connect)  cmd=("$T3_INFRA_LAUNCHER" connect) ;;
   -h|--help|"") usage; [ -n "$harness" ] && exit 0 || exit 2 ;;
   *) printf 't3-login: unknown harness %s\n\n' "$harness" >&2; usage >&2; exit 2 ;;
 esac
