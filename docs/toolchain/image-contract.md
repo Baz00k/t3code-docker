@@ -1,7 +1,7 @@
 # Image Contract: `core` And `browser`
 
-TM-10 defined the final targets additively; TM-13 removed the transitional
-`slim`/`full` targets and made these the product. This is the authoritative
+`core` and `browser` are the final product targets; the historical
+`slim`/`full` targets are no longer built. This is the authoritative
 package contract for what the image contains and what it deliberately does not.
 
 The canonical product contract is
@@ -142,7 +142,7 @@ scripts/test-provider-integration.sh t3code:core t3code:browser
 ## Size evidence
 
 Measured 2026-09-18 on native amd64 via `scripts/measure-image.sh` during the
-TM-13 candidate rehearsal (source `d371bf6`, run
+final-target candidate rehearsal (source `d371bf6`, run
 [35321725906](https://github.com/Baz00k/t3code-docker/actions/runs/35321725906);
 compressed = gzipped `docker save`, unpacked = sum of uncompressed layers,
 startup = `docker run` to first `/.well-known/t3/environment`):

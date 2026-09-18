@@ -1,12 +1,12 @@
-// The five supported agent harnesses, as audited in
-// docs/toolchain/provider-audit.md. This file is data only: every executable
+// The five supported agent harnesses, governed by
+// docs/toolchain/provider-contract.md. This file is data only: every executable
 // name, architecture, credential surface, and minimum version the manager
 // enforces comes from here, so the module, the setup console, and the CLI all
 // describe the same harnesses.
 
 /**
  * T3 refuses to serve OpenCode below this version, so a managed install must
- * not select one. Taken from the provider audit's `MINIMUM_OPENCODE_VERSION`.
+ * not select one. T3's provider contract requires this minimum version.
  */
 export const MINIMUM_OPENCODE_VERSION = "1.14.19";
 
@@ -19,8 +19,8 @@ export const MINIMUM_OPENCODE_VERSION = "1.14.19";
 export const CURSOR_EXECUTABLE = "cursor-agent";
 
 /**
- * `executable` is the path relative to the mise install directory; the audit
- * verified the layout for each backend. `versionArgs` is the bounded probe the
+ * `executable` is the path relative to the mise install directory. `versionArgs`
+ * is the bounded probe the
  * manager runs to turn "a file exists" into "this exact version runs".
  */
 export const CATALOGUE = Object.freeze([
@@ -32,7 +32,7 @@ export const CATALOGUE = Object.freeze([
     versionArgs: ["--version"],
     versionPattern: "(\\d+\\.\\d+\\.\\d+)",
     minimumVersion: null,
-    // Both release assets exist for x64 and arm64 (provider audit).
+    // Both release assets exist for x64 and arm64.
     architectures: ["x64", "arm64"],
     bakedFallbacks: ["/opt/npm-global/bin/claude"],
     credentials: {

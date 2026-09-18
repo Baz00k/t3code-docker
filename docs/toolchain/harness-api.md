@@ -1,8 +1,8 @@
 # Persistent Harness Manager API
 
-TM-06 deliverable. One module owns exact-version installation, state, locking,
+One module owns exact-version installation, state, locking,
 and executable resolution for the five supported harnesses. The setup console
-(TM-08) and the T3 integration (TM-07) consume this API instead of inventing
+and the T3 integration consume this API instead of inventing
 their own install/resolve logic, so there is exactly one source of truth for
 which executable a provider launches - no PATH workaround.
 
@@ -14,7 +14,7 @@ scripts/test-harness-manager.sh t3code:core         # 125 container assertions
 ```
 
 The provider facts behind the catalogue are in
-[`provider-audit.md`](./provider-audit.md); the mise storage and policy are in
+[`provider-contract.md`](./provider-contract.md); the mise storage and policy are in
 [`project-execution.md`](./project-execution.md). The canonical product
 contract is [`TOOLCHAIN-MANAGEMENT-PLAN.md`](../../TOOLCHAIN-MANAGEMENT-PLAN.md).
 
@@ -58,7 +58,8 @@ Exactly five entries, ids stable and independent of the mise tool name:
 
 Cursor is canonical as `cursor-agent`. The native installer's `agent` alias is
 never created, named, or relied on - it collides with Grok's aqua package and
-mise's backend recreates only `cursor-agent` (see the audit).
+mise's backend recreates only `cursor-agent` (see
+[`provider-contract.md`](./provider-contract.md)).
 
 `arch` is normalized from node (`x64`/`arm64`) or `dpkg`/uname (`amd64`,
 `x86_64`, `aarch64`). `install`/`update` refuse an entry with no build for the
@@ -196,7 +197,7 @@ The catalogue still lists the historical fallback paths
 (`/opt/npm-global/bin/<name>`, `/opt/cursor/.local/bin/cursor-agent`), but the
 final `core`/`browser` images ship no baked harness executables: `present` is
 always `false` there, and Uninstall always removes the provider. The field is
-kept so the manager's contract does not change shape and a transitional image
+kept so the manager's contract does not change shape and an older image
 loaded alongside this code still reports honestly. A live read-only status of
 the fallback binary is opt-in via `probeBaked: true`; the default reports
 presence and path only.
@@ -232,27 +233,11 @@ version is reproduced from the recorded artifact, not re-derived. The manager
 does not claim verified downloads for backends without checksums (Codex, Grok,
 Cursor); only the executable-run verification is promised.
 
-## Out of scope
+## Integration constraints
 
-Setup routes, UI, and CLI presentation (TM-08); writing provider
-`binaryPath`/settings into T3 (TM-07); offline status budgets (TM-09); and
-copying this module into the image (owned by TM-07/TM-08). This module is
-imported directly by those changes.
-
-## Handoff
-
-- **TM-07 (connect T3 to managed executables):** take the absolute
-  `resolve(id).executable` (only when `runnable`) and write it into the
-  provider's `binaryPath`. No PATH shim is needed or permitted. Cursor's native
-  self-updater is accepted as-is and must not be gated; a managed Cursor may
-  update itself beyond the version the manager recorded.
-- **TM-08 (setup UI and CLI):** render `status()` facts - distinguish
-  configured/installed/runnable/authenticated/failed - and call
-  `install`/`update`/`uninstall`. Drop the ad-hoc `which()` detection;
-  keep the existing sign-in flows and call `invalidateAuth(id)` when they
-  finish. Run as `t3` and import the module from wherever the image copies it.
-- **TM-09 (offline status):** `status({ authenticate: false })` performs one
-  local `mise ls` and filesystem checks, and is the cheap path for offline
-  polling. No call in this module installs or updates during a read.
-- **TM-13 (product switch):** remove the baked binaries listed above; the
-  manager already reports their absence as `bakedFallback.present: false`.
+Consumers write `resolve(id).executable` to the provider's `binaryPath` only
+when the harness is runnable; no PATH shim is needed or permitted. Setup renders
+the manager's configured/installed/runnable/authenticated/failed facts and calls
+the lifecycle methods directly. `status({ authenticate: false })` is the cheap,
+local path for polling and never installs or updates. Cursor's native self-update
+remains accepted, and final images report no baked fallback.

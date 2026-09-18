@@ -1,4 +1,4 @@
-// Unit tests for the offline-safe setup caches (TM-09).
+// Unit tests for the offline-safe setup caches.
 //
 //   node --test tests/setup-cache.test.mjs
 //

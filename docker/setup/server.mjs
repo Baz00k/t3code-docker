@@ -241,7 +241,7 @@ const toPublicHarness = (facts) => ({
 
 // --- offline-safe status ------------------------------------------------------
 //
-// `/status` and `/providers` stay responsive under `--network none` (TM-09):
+// `/status` and `/providers` stay responsive under `--network none`:
 // every sub-read is local or bounded, provider data is served from bundled or
 // cached state with an asynchronous refresh, and harness auth facts come from
 // a coalesced refresh with a cheap local fallback. Nothing on these paths
@@ -293,7 +293,7 @@ const harnessStatus = async (options = {}) => {
 };
 
 // The absolute managed executable when one is runnable, else the baked
-// fallback the transition still ships, else null. Sign-in and the API-key
+// baked fallback when present in an older image, else null. Sign-in and the API-key
 // stdin flow run through this, so credentials land where the executable T3
 // launches reads them.
 const managedExecutable = async (id) => {
@@ -358,7 +358,7 @@ const fetchProviderCatalog = async () => {
 
 // Serve the catalogue immediately from memory, the disk cache, or the bundled
 // fallback, and refresh asynchronously: under `--network none` this answers
-// in milliseconds instead of waiting out the fetch timeout (TM-09). The disk
+// in milliseconds instead of waiting out the fetch timeout. The disk
 // read and the fetch are the only I/O here; polling never installs anything.
 const providerCache = createProviderCache({
   readFile: async () => {
@@ -575,7 +575,7 @@ const startSignin = async (agentId) => {
 
   // Run the sign-in through the managed executable when one is runnable, so
   // credentials land where the harness T3 launches reads them. Otherwise fall
-  // back to the baked harness on PATH, which is what transitional images ship.
+  // back to a baked harness on PATH when an older image supplies one.
   // argv stays fixed per agent - only the binary is resolved, never built from
   // request input - so the shell that `script` needs cannot be steered.
   const managed = await managedExecutable(agentId);

@@ -244,7 +244,7 @@ jobs:
             echo "T3C_PLATFORM=linux/amd64"
           } >> "$GITHUB_ENV"
 
-      # TM-12 may need the browser candidate next to a core image. It is only
+      # The E2E may need the browser candidate next to a core image. It is only
       # advertised when the browser target was part of this rehearsal.
       - uses: actions/download-artifact@v4
         continue-on-error: true

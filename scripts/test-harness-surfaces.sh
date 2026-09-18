@@ -3,7 +3,7 @@
 #
 #   scripts/test-harness-surfaces.sh [image]     (default: t3code:core)
 #
-# The unit under test is TM-08 on one real amd64 image: the Agents card's
+# The unit under test is the harness surface on one real amd64 image: the Agents card's
 # lifecycle endpoints and the noninteractive `t3-harness` CLI over the shared
 # harness manager. The final images bake no harness, so the fallback field is
 # asserted absent rather than present.

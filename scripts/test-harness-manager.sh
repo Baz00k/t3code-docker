@@ -9,9 +9,8 @@
 # recovery, credential-preserving uninstall with no baked fallback, and
 # persistence across container recreation.
 #
-# The module is copied into the container rather than assumed to be baked into
-# the image: wiring it into the image is TM-07/TM-08's change, and this test
-# must not depend on it.
+# The module is copied into the container so the test always exercises the
+# checkout rather than a stale image copy.
 set -euo pipefail
 
 ROOT="$(cd "$(dirname "$0")/.." && pwd)"
@@ -24,8 +23,7 @@ MODULE_DEST=/opt/t3-harness
 DRIVER=/tmp/hm-driver.mjs
 HOLD_LOG=/tmp/hm-hold-$$.log
 
-# The versions the transitional image bakes, so the managed installs are the
-# same exact artifacts the fallback would otherwise provide.
+# Stable fixture versions used to exercise exact managed selections.
 CLAUDE_VERSION=2.1.270
 CODEX_VERSION=0.154.0
 OPENCODE_VERSION=1.18.30

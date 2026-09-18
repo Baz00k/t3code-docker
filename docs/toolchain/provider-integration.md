@@ -1,7 +1,7 @@
 # T3 Managed Harness Integration
 
-TM-07 deliverable. T3 Code launches the exact executable the persistent harness
-manager (TM-06) selected, through the one supported integration seam - the
+T3 Code launches the exact executable the persistent harness manager selected,
+through the one supported integration seam - the
 per-provider `binaryPath` setting - with no PATH workaround and no code that
 touches a provider's own updater.
 
@@ -12,8 +12,8 @@ node --test tests/provider-integration.test.mjs              # 14 unit tests
 scripts/test-provider-integration.sh t3code:core t3code:browser # 54 container assertions
 ```
 
-The provider facts behind the seam are in
-[`provider-audit.md`](./provider-audit.md); the manager API is in
+The durable provider contract is in
+[`provider-contract.md`](./provider-contract.md); the manager API is in
 [`harness-api.md`](./harness-api.md); mise storage and policy are in
 [`project-execution.md`](./project-execution.md). The canonical product
 contract is [`TOOLCHAIN-MANAGEMENT-PLAN.md`](../../TOOLCHAIN-MANAGEMENT-PLAN.md).
@@ -111,9 +111,8 @@ line (`applied claude,opencode; cleared none`) that the entrypoint logs.
   missing module is a no-op and a failure only warns.
 - **`t3-login`:** resolves the managed executable for the requested harness and
   runs the sign-in through it, falling back to the baked harness on PATH. It
-  now uses `cursor-agent login` - `agent` is native-installer-only (the audit
-  resolved the naming inconsistency; an `agent` binary would also collide with
-  Grok's aqua package).
+  uses `cursor-agent login` - `agent` is native-installer-only (and would
+  collide with Grok's aqua package).
 - **`t3-browser-mcp`:** each of Claude, Codex and OpenCode is registered
   through its managed executable when one is runnable, and through the baked
   harness otherwise. The script prints `(via <path>)` so the choice is visible,
@@ -138,9 +137,9 @@ first. Chromium flags are unchanged (`--no-sandbox`, `--isolated`).
 Cursor's CLI is its own updater, and the product decision is to accept that. A
 managed Cursor may update itself directly or through T3's update action and
 become newer than the exact version the manager recorded at install time. The
-recorded version is **advisory, not a lock**. No code in this integration (or
-anywhere TM-07 owns) blocks, redirects, disables or re-surfaces that
-self-update, and no `enableProviderUpdateChecks` override is written. The
+recorded version is **advisory, not a lock**. No repository code blocks,
+redirects, disables or re-surfaces that self-update, and no
+`enableProviderUpdateChecks` override is written. The
 container test asserts that no gating tokens exist in the owned files.
 
 For the other four harnesses the updater question is answered by mise, not by
@@ -199,25 +198,12 @@ Launch evidence is T3's own probe and SDK/ACP spawn of the configured absolute
 path; the version in the cached snapshot is the managed binary's. Auth is a
 separate field (`auth.status`) and is not inferred from a successful launch, so
 a missing credential stays visible rather than reading as a launch failure.
-Credentialed agent sessions require accounts and are covered by TM-12's
-end-to-end run.
+Credentialed agent sessions require accounts and are recorded separately from
+executable-launch verification.
 
-## Handoff
-
-- **TM-08 (setup UI/CLI):** after every Install/Update/Uninstall, call
-  `createProviderIntegration({ harness }).sync()` from
-  `/opt/t3-provider/index.mjs` (or shell out to `cli.mjs sync --json`). Do not
-  implement a second settings writer. The manager remains the only source of
-  executable selection; `sync` is the notification.
-- **TM-09 (offline status):** `sync` is not part of status polling. `cli.mjs
-  status` and `resolve` use `authenticate: false` and are local-only.
-- **TM-12 (E2E):** assert per-harness launch in T3's cached snapshot and the
-  manual-only updater verdict; treat a self-updated Cursor as observed drift
-  (advisory version), not a failure.
-- **TM-13 (product switch):** removing the baked harnesses only changes what
-  `t3-login`/`t3-browser-mcp` fall back to; the managed path and `sync`
-  behaviour are unchanged, and `bakedFallback.present` already reports their
-  absence.
-- **Image:** `Dockerfile` copies `docker/harness/` to `/opt/t3-harness` and
-  `docker/provider-integration/` to `/opt/t3-provider`; the entrypoint logs the
-  one summary line at start.
+After every Install/Update/Uninstall, the setup surfaces call
+`createProviderIntegration({ harness }).sync()` (or `cli.mjs sync --json`). The
+manager remains the only source of executable selection, and `sync` is not part
+of status polling. `Dockerfile` copies the manager and integration modules to
+`/opt/t3-harness` and `/opt/t3-provider`; the entrypoint logs one sync summary
+at start.

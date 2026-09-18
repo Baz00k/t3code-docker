@@ -1,4 +1,4 @@
-// Offline-safe cache helpers for the setup console (TM-09).
+// Offline-safe cache helpers for the setup console.
 //
 // `/status` and `/providers` must each answer within five seconds with no
 // network (see docs/toolchain/offline.md). The strategy is the same for both:

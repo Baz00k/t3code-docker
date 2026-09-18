@@ -1,9 +1,9 @@
 # Harness Lifecycle UI and CLI
 
-TM-08 deliverable. The existing Agents card and the noninteractive
+The existing Agents card and the noninteractive
 `t3-harness` CLI expose the same managed Install, Update, Uninstall, and
-status behavior over the one shared harness manager (TM-06). T3 learns about
-a new selection through one provider-integration `sync()` (TM-07), never a
+status behavior over the one shared harness manager. T3 learns about a new
+selection through one provider-integration `sync()`, never a
 second settings writer.
 
 Companion verification:
@@ -16,7 +16,7 @@ scripts/test-harness-surfaces.sh t3code:core                  # container assert
 
 The manager API is in [`harness-api.md`](./harness-api.md); the T3 seam is in
 [`provider-integration.md`](./provider-integration.md); the offline budgets
-are in [`offline.md`](./offline.md) (TM-09). The canonical product contract
+are in [`offline.md`](./offline.md). The canonical product contract
 is [`TOOLCHAIN-MANAGEMENT-PLAN.md`](../../TOOLCHAIN-MANAGEMENT-PLAN.md).
 
 ## Routes
@@ -159,4 +159,4 @@ installed offers Install rather than a sign-in that could not run.
 ## Out of scope
 
 Setup wizard or redesign (none added); offline cache budgets and freshness
-(TM-09 owns `/status`/`/providers` under `--network none`).
+(`/status` and `/providers` remain bounded under `--network none`).

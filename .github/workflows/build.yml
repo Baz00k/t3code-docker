@@ -31,10 +31,11 @@ jobs:
       - name: Shell scripts parse and pass shellcheck
         run: |
           sudo apt-get update && sudo apt-get install -y shellcheck
-          for f in docker/entrypoint.sh docker/bin/* scripts/*.sh; do
+          for f in docker/entrypoint.sh docker/bin/* scripts/*.sh scripts/lib/*.sh tests/*.test.sh; do
             bash -n "$f"
             shellcheck -S warning "$f"
           done
+          bash tests/image-profile.test.sh
       - name: Compose file is valid
         run: docker compose config >/dev/null
 

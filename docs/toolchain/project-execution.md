@@ -1,6 +1,6 @@
 # Project Execution Through mise
 
-TM-04 deliverable. The image ships one pinned mise release as immutable
+The image ships one pinned mise release as immutable
 infrastructure, keeps every tool it manages in the unprivileged user's
 persistent home, and enables project-aware execution without widening root's
 environment. This note records the pin and its provenance, the persistent paths
@@ -157,7 +157,7 @@ tool selection anywhere else:
   guaranteed to select a project toolchain, because mise is not consulted.
 - Transparent selection inside T3 or a harness is only promised where the
   provider launcher accepts an executable override (see
-  [`provider-audit.md`](./provider-audit.md)); opaque subprocesses are outside
+  [`provider-contract.md`](./provider-contract.md)); opaque subprocesses are outside
   this boundary.
 - No global command stubs ship. Commands that bypass mise are not intercepted.
 
@@ -180,14 +180,8 @@ auto-install; malformed and impossible versions; the shim fallback setting; and
 cached execution offline. Verification is amd64-only, per the plan; arm64 is
 built and published but not separately smoked.
 
-## Handoff to dependent tasks
-
-- **TM-05 (ownership/persistence diagnostics):** the mise paths above are the
-  ones `t3-doctor` should report, and the trust store lives in the state dir.
-- **TM-06/TM-07 (harness manager):** a managed harness is one more tool in this
-  data dir; installs must land under `/home/t3` so they survive recreation, and
-  the executable a provider launcher is pointed at should be resolved through
-  `mise` rather than a `PATH` search.
-- The harness executables are not baked, the `core`/`browser` package
-  inventories are the product contract (TM-13), and T3's native provider updater
-  is deliberately redirected to manual-only for mise-owned paths (TM-07).
+`t3-doctor` reports these mise paths, and the trust store lives in the state
+directory. Managed harness installs use the same persistent data directory and
+provider launchers receive executables resolved through mise rather than a PATH
+search. T3 treats mise-owned paths for the four non-Cursor providers as
+manual-only for updates; Cursor's self-updater is the documented exception.

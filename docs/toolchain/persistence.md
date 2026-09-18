@@ -1,6 +1,6 @@
 # Persistence, Ownership and Diagnostics
 
-TM-05 deliverable. Installed tools, harnesses and mise state live under the
+Installed tools, harnesses and mise state live under the
 unprivileged user's persistent home, so the home volume is the unit of
 durability. This note records how UID/GID migration survives interruption, how
 `t3-doctor` reports what is actually mounted, and where the boundary between
@@ -174,13 +174,6 @@ an external `T3CODE_HOME`; workspace non-recursion; and `t3-doctor` reporting
 the mise fields, the observed mounts, the state-only warning, and no root-owned
 state. Verification is amd64-only, per the plan.
 
-## Handoff to dependent tasks
-
-- **TM-06/TM-07 (harness manager):** a managed harness is one more tool under
-  `$MISE_DATA_DIR`; installing it there is what makes it survive recreation, and
-  `t3-doctor` will list it under `installed tools` automatically.
-- **TM-09 (offline-safe status):** the mount verdicts are local, read-only
-  `/proc/self/mountinfo` parses and need no network.
-- The `core`/`browser` package inventories and the absence of baked harnesses
-  are the product switch's contract (TM-13); the managed harnesses are one more
-  tool under the persistent home.
+Managed harnesses are tools under `$MISE_DATA_DIR`, so they survive recreation
+and appear in `t3-doctor`'s installed-tool report. Mount verdicts are local,
+read-only `/proc/self/mountinfo` parses and require no network.

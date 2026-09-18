@@ -19,6 +19,10 @@
 # output; the default stays strict.
 set -euo pipefail
 
+SCRIPT_DIR="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd)"
+# shellcheck source=scripts/lib/image-profile.sh
+. "$SCRIPT_DIR/lib/image-profile.sh"
+
 VARIANT=""
 IMAGE=""
 
@@ -43,45 +47,7 @@ while [ $# -gt 0 ]; do
 done
 [ -n "$IMAGE" ] || IMAGE="t3code:core"
 
-case "$VARIANT" in
-  ""|core|browser) ;;
-  *) echo "smoke-test.sh: variant must be core or browser" >&2; exit 2 ;;
-esac
-
-if [ -z "$VARIANT" ]; then
-  tag="${IMAGE##*:}"
-  # A digest reference has no tag (the part after the last colon is the
-  # digest itself, or the image has no colon at all).
-  case "$IMAGE" in
-    *@sha256:*) tag="" ;;
-  esac
-  case "$tag" in
-    core|browser) VARIANT="$tag" ;;
-    *-core) VARIANT="core" ;;
-    *-browser) VARIANT="browser" ;;
-    *)
-      # Fall back to the stamp baked into the image config when the tag
-      # carries no variant (e.g. a local digest ID). Needs the image locally.
-      if VARIANT="$(docker image inspect --format \
-          '{{range .Config.Env}}{{println .}}{{end}}' "$IMAGE" 2>/dev/null \
-          | sed -n 's/^T3_IMAGE_VARIANT=//p' | head -1)" \
-          && [ -n "$VARIANT" ]; then
-        :
-      else
-        echo "smoke-test.sh: cannot infer --variant from '$IMAGE'; pass --variant explicitly" >&2
-        exit 2
-      fi
-      ;;
-  esac
-fi
-
-# Explicit capability profile. Nothing below infers a capability from the
-# presence of Chromium or any other binary; the variant is the selector.
-HAS_BROWSER=0
-case "$VARIANT" in
-  core)    ;;
-  browser) HAS_BROWSER=1 ;;
-esac
+t3_image_profile_resolve "smoke-test.sh" "$IMAGE" "$VARIANT"
 NAME="t3code-smoke-$$"
 PORT="${SMOKE_PORT:-13773}"
 PUBLIC_URL="https://smoke.example.test"
@@ -202,7 +168,7 @@ fi
 
 # T3 Code also enforces a minimum OpenCode version, but final images have no
 # baked opencode to hold to it: the harness manager records the resolved exact
-# version on explicit install, and the TM-12 E2E installs the latest and
+# version on explicit install, and the final-target E2E installs the latest and
 # asserts T3 launches it. Here just prove no stale bake can mask an update.
 check "no baked opencode to hold to a minimum" \
   "! docker exec $NAME sh -c 'command -v opencode' >/dev/null 2>&1"
@@ -277,7 +243,7 @@ if [ "$HAS_BROWSER" -eq 1 ]; then
   check "chrome-devtools-mcp present" "have chrome-devtools-mcp"
 
   # "installed" and "an agent can see a page" are different claims.
-  docker cp "$(dirname "$0")/browser-probe.py" "$NAME:/tmp/browser-probe.py" >/dev/null
+  docker cp "$SCRIPT_DIR/browser-probe.py" "$NAME:/tmp/browser-probe.py" >/dev/null
   check "browser MCP drives a real page (playwright)" \
     "docker exec -u t3 $NAME python3 /tmp/browser-probe.py"
   check "browser MCP drives a real page (chrome-devtools)" \
@@ -415,7 +381,7 @@ check "the image build is stamped and reported ($VARIANT)" version_is_stamped
 # Images ship no baked harness, so these flows exercise only what does not need
 # a harness executable: file-backed OpenCode writes, honest unknown states, and
 # the provider catalog. Managed-harness sign-in is covered by
-# test-provider-integration.sh and the TM-12 E2E.
+# test-provider-integration.sh and the final-target E2E.
 printf '\nAgent authentication (variant %s)\n' "$VARIANT"
 auth_post() { docker exec "$NAME" sh -c "curl -sS -b /tmp/jar -H 'content-type: application/json' -d '$1' http://127.0.0.1:3774$2"; }
 
@@ -433,7 +399,7 @@ check "an unknown agent is refused" \
 
 # Harness executables are not baked, so there is no executable to probe: the
 # manager honestly reports null (unknown) even with an env-var credential.
-# Managed sign-in with an installed harness is covered by the TM-12 E2E.
+# Managed sign-in with an installed harness is covered by the final-target E2E.
 ok "SKIP env-var Claude verdict (no executable to probe in $VARIANT; E2E covers managed)"
 docker rm -f "${NAME}-env" >/dev/null 2>&1 || true
 
@@ -486,7 +452,7 @@ check "the provider picker offers a catalog the server accepts" provider_catalog
 # scraping the visible text yields a truncated URL missing the PKCE challenge
 # and state, which would send you to a sign-in page that cannot complete.
 # These flows spawn the harness executable, so they need a managed install;
-# the TM-12 E2E covers them.
+# the final-target E2E covers them.
 ok "SKIP Claude OAuth URL (no baked harness in $VARIANT)"
 
 # Capturing the URL is half the flow; the code has to get back in. That prompt

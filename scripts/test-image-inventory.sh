@@ -17,6 +17,10 @@
 # digest references require an explicit --variant.
 set -euo pipefail
 
+SCRIPT_DIR="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd)"
+# shellcheck source=scripts/lib/image-profile.sh
+. "$SCRIPT_DIR/lib/image-profile.sh"
+
 VARIANT=""
 IMAGE=""
 
@@ -41,42 +45,7 @@ while [ $# -gt 0 ]; do
 done
 [ -n "$IMAGE" ] || IMAGE="t3code:core"
 
-case "$VARIANT" in
-  ""|core|browser) ;;
-  *) echo "test-image-inventory.sh: variant must be core or browser" >&2; exit 2 ;;
-esac
-
-if [ -z "$VARIANT" ]; then
-  tag="${IMAGE##*:}"
-  case "$IMAGE" in
-    *@sha256:*) tag="" ;;
-  esac
-  case "$tag" in
-    core|browser) VARIANT="$tag" ;;
-    *-core) VARIANT="core" ;;
-    *-browser) VARIANT="browser" ;;
-    *)
-      if VARIANT="$(docker image inspect --format \
-          '{{range .Config.Env}}{{println .}}{{end}}' "$IMAGE" 2>/dev/null \
-          | sed -n 's/^T3_IMAGE_VARIANT=//p' | head -1)" \
-          && [ -n "$VARIANT" ]; then
-        :
-      else
-        echo "test-image-inventory.sh: cannot infer --variant from '$IMAGE'; pass --variant explicitly" >&2
-        exit 2
-      fi
-      ;;
-  esac
-fi
-
-# Expected capabilities. Mirrors scripts/smoke-test.sh and
-# docs/toolchain/image-contract.md; nothing here probes for a binary to
-# decide what to expect.
-HAS_BROWSER=0
-case "$VARIANT" in
-  core)    ;;
-  browser) HAS_BROWSER=1 ;;
-esac
+t3_image_profile_resolve "test-image-inventory.sh" "$IMAGE" "$VARIANT"
 
 NAME="t3code-inventory-$$"
 

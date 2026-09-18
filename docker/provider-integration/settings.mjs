@@ -7,7 +7,7 @@
 //
 //   * `providers.<driverKind>` - the legacy one-instance-per-driver map. T3
 //     hydrates an instance from it when no explicit instance exists, which is
-//     the case the audit proved live.
+//     the compatibility shape T3 still reads.
 //   * `providerInstances.<driverKind>.config.binaryPath` - the newer
 //     driver-agnostic map. It wins over the legacy mirror, so an explicit
 //     default instance must be updated too or it would shadow the selection.

@@ -75,7 +75,7 @@ case "$harness" in
       codex)    bin="$(harness_exec codex codex)";       args=(login) ;;
       opencode) bin="$(harness_exec opencode opencode)"; args=(auth login) ;;
       # cursor-agent is canonical; the native installer's `agent` alias is
-      # never relied on (see docs/toolchain/provider-audit.md).
+      # never relied on (see docs/toolchain/provider-contract.md).
       cursor)   bin="$(harness_exec cursor cursor-agent)"; args=(login) ;;
       grok)     bin="$(harness_exec grok grok)";         args=(login) ;;
     esac

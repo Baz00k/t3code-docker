@@ -1,6 +1,6 @@
 // Connect T3 Code's provider settings to the persistent harness manager.
 //
-// The harness manager (TM-06) is the single source of truth for which
+// The harness manager is the single source of truth for which
 // executable a harness should run: an exact version installed under mise, with
 // the concrete path resolved from the install tree. T3 Code cannot be told
 // about that selection through a CLI, but it does expose the supported

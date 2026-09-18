@@ -1,6 +1,6 @@
 #!/usr/bin/env node
 /*
- * Focused audit for the harness lifecycle surfaces (TM-08).
+ * Focused audit for the harness lifecycle surfaces.
  *
  *   node scripts/harness-ui-audit.js [baseUrl] [setupKey]
  *

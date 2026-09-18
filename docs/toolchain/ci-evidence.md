@@ -1,6 +1,6 @@
 # Native CI And Tested-Digest Promotion
 
-TM-11 deliverable, switched to the final product by TM-13. `core` and
+`core` and
 `browser` are built for `linux/amd64` and `linux/arm64` on native runners, the
 amd64 members are proven by the capability checks (including the final-target
 E2E), and a release tag can only be promoted from the exact digests that were
@@ -169,7 +169,7 @@ Evidence record shape:
   "tested": true,
   "checks": ["infrastructure", "mise", "ownership", "harness", "offline", "runtime", "inventory", "smoke", "measure", "e2e"],
   "size": { "compressed_bytes": 0, "unpacked_bytes": 0, "startup_seconds": 0.0 },
-  "pinFreshness": "waived",
+  "pinFreshness": "asserted",
   "sourceSha": "...",
   "runUrl": "https://github.com/.../actions/runs/..."
 }
@@ -228,11 +228,13 @@ Measured from the pulled amd64 digests (startup is the first healthy response):
 | `core` | 0.69 GiB (745,217,028 B) | 2.03 GiB (2,179,749,376 B) | 3.66 s | infrastructure, mise, ownership, harness, offline, runtime, inventory, smoke, measure, e2e |
 | `browser` | 0.97 GiB (1,043,181,614 B) | 2.63 GiB (2,825,801,216 B) | 3.65 s | infrastructure, mise, ownership, harness, offline, runtime, inventory, smoke, measure, e2e |
 
-Both records are `tested: true` with `pinFreshness: "waived"` (TM-16). The
-local dry runs at the same source passed 147/0 checks on `core` and 156/0 on
-`browser`.
+Both records are `tested: true`. That rehearsal predated the T3 0.0.42
+distribution migration and temporarily recorded `pinFreshness: "waived"`; the
+current candidate and release workflows run strict smoke checks and record
+`pinFreshness: "asserted"`. The local dry runs at the same source passed 147/0
+checks on `core` and 156/0 on `browser`.
 
-Historical transitional rehearsal (TM-11), 2026-09-17, source `2fec568`
+Historical transitional rehearsal, 2026-09-17, source `2fec568`
 (run [35256458619](https://github.com/Baz00k/t3code-docker/actions/runs/35256458619)):
 all four targets built for amd64 and arm64 and passed their capability checks;
 the `slim`/`full` digests below are the last transitional artifacts this
@@ -254,7 +256,7 @@ skipped because a test job failed, and the run produced build evidence only - no
 
 - **Credentialed harness sign-ins.** No provider accounts are used in CI;
   harness facts remain `signedIn: null` where no executable can be probed.
-  TM-12 records credentialed checks separately from executable-launch checks.
+  Credentialed checks are recorded separately from executable-launch checks.
 - **arm64 smoke tests.** Built and digest-mapped only, by policy.
 - **Startup timing through the registry.** `measure-image.sh` registry mode
   cannot time a boot; CI stores compressed/unpacked sizes and the local

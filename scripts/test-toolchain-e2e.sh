@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# End-to-end verification of the transitional product (TM-12).
+# End-to-end verification of the final toolchain-management product.
 #
 #   scripts/test-toolchain-e2e.sh --variant core|browser <image>
 #                               [--keep]
@@ -287,7 +287,7 @@ wait_for_snapshot() { # id timeout installed-expectation
   return 1
 }
 
-printf '\nEnd-to-end verification of the transitional product on %s (variant %s)\n' \
+printf '\nEnd-to-end verification of the toolchain product on %s (variant %s)\n' \
   "$IMAGE" "$VARIANT"
 
 section "Fresh $VARIANT image"

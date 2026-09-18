@@ -1,6 +1,6 @@
 # Offline-Safe Setup Status
 
-TM-09 deliverable. Under `--network none`, authenticated `/status` and
+Under `--network none`, authenticated `/status` and
 `/providers` each complete within five seconds from bundled or cached state,
 without triggering installs or updates.
 

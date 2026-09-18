@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# Assert setup status stays offline-safe (TM-09).
+# Assert setup status stays offline-safe.
 #
 #   scripts/test-offline.sh [--variant NAME] [image]     (default: t3code:core)
 #
@@ -30,6 +30,8 @@
 set -euo pipefail
 
 ROOT="$(cd "$(dirname "$0")/.." && pwd)"
+# shellcheck source=scripts/lib/image-profile.sh
+. "$ROOT/scripts/lib/image-profile.sh"
 VARIANT=""
 IMAGE=""
 
@@ -54,33 +56,7 @@ while [ $# -gt 0 ]; do
 done
 [ -n "$IMAGE" ] || IMAGE="t3code:core"
 
-case "$VARIANT" in
-  ""|core|browser) ;;
-  *) echo "test-offline.sh: variant must be core or browser" >&2; exit 2 ;;
-esac
-
-if [ -z "$VARIANT" ]; then
-  tag="${IMAGE##*:}"
-  case "$IMAGE" in
-    *@sha256:*) tag="" ;;
-  esac
-  case "$tag" in
-    core|browser) VARIANT="$tag" ;;
-    *-core) VARIANT="core" ;;
-    *-browser) VARIANT="browser" ;;
-    *)
-      if VARIANT="$(docker image inspect --format \
-          '{{range .Config.Env}}{{println .}}{{end}}' "$IMAGE" 2>/dev/null \
-          | sed -n 's/^T3_IMAGE_VARIANT=//p' | head -1)" \
-          && [ -n "$VARIANT" ]; then
-        :
-      else
-        echo "test-offline.sh: cannot infer --variant from '$IMAGE'; pass --variant explicitly" >&2
-        exit 2
-      fi
-      ;;
-  esac
-fi
+t3_image_profile_resolve "test-offline.sh" "$IMAGE" "$VARIANT"
 
 NAME="t3code-offline-$$"
 VOLUME="t3code-offline-home-$$"

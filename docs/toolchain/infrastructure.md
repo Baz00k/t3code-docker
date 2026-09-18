@@ -1,6 +1,6 @@
 # Immutable T3 Infrastructure
 
-TM-03 deliverable, updated by TM-16. T3 Code runs as a root-owned native
+T3 Code runs as a root-owned native
 platform binary, while the setup service runs under the image's own Node;
 user-installed tooling lives somewhere writable, separately. This note records
 the paths, the one launcher every
@@ -10,7 +10,7 @@ initialization belongs.
 The canonical product contract is
 [`TOOLCHAIN-MANAGEMENT-PLAN.md`](../../TOOLCHAIN-MANAGEMENT-PLAN.md). The
 provider matrix is
-[`provider-audit.md`](./provider-audit.md).
+[`provider-contract.md`](./provider-contract.md).
 
 ## Paths
 
@@ -87,9 +87,10 @@ npm config rather than a process-wide variable:
   never the T3 installation.
 
 T3 Code's provider updater is deliberately not used for managed harnesses:
-they install through mise, and their resolved paths are manual-only in the
-provider audit, so T3's update action cannot fight the manager (see
-[`provider-audit.md`](./provider-audit.md)).
+they install through mise, and the four non-Cursor providers resolve to
+manual-only updates for mise-owned paths, so T3's update action cannot fight the
+manager. Cursor's accepted self-update exception is documented in
+[`provider-contract.md`](./provider-contract.md).
 
 ## User initialization hook
 
@@ -144,14 +145,7 @@ scripts/smoke-test.sh t3code:browser
 - root has no `NPM_CONFIG_PREFIX`, keeps the `/usr/local` prefix, `HOME=/root`,
   and no user directory on `PATH`.
 
-## Handoff to dependent tasks
-
-- **TM-04 (mise):** persistent user paths live under `/home/t3`; add their
-  activation to the user initialization hook, never process-wide.
-- **TM-06/TM-07 (harness manager):** managed executables resolve to concrete
-  absolute paths under the user home and are passed to T3 as
-  `<Provider>Settings.binaryPath`; the launcher and mutable prefix here are
-  unchanged by that.
-- **TM-13 (product switch):** the baked harness set and the Cursor vendor
-  installer were removed with the `slim`/`full` targets; only the immutable T3
-  infrastructure described above ships now.
+Persistent user paths are activated only through the user initialization hook,
+never process-wide. Managed harnesses resolve to concrete absolute paths under
+the user home and are passed to T3 through provider `binaryPath` settings. No
+baked harness or Cursor vendor installer is part of the immutable infrastructure.
