@@ -157,7 +157,7 @@ startup = `docker run` to first `/.well-known/t3/environment`):
 `core` is ~36% smaller compressed than the historical `slim` while carrying
 the non-browser union; `browser` is ~50% smaller compressed than the historical
 `full` while carrying Chromium/fonts/MCP. Startup stays around 3-4 s on both.
-The publishable digests and their candidate manifests are recorded in
+The publishable digests and delivery evidence are recorded in
 [`ci-evidence.md`](./ci-evidence.md).
 
 Persistent installs (from the runtime matrix above, same run):

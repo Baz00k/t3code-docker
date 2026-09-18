@@ -14,7 +14,7 @@
 # and jq. Registry credentials come from the ambient docker login, exactly like
 # the promotion step that calls this script.
 #
-#   # The candidate rehearsal verifying its own promotion:
+#   # Verify a staged promotion before assigning release tags:
 #   scripts/verify-promoted-manifest.sh \
 #     --expect linux/amd64=sha256:111... \
 #     --expect linux/arm64=sha256:222... \

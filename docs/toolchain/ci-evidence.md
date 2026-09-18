@@ -40,14 +40,13 @@ the effort's verification policy: both architectures are supported and
 published, amd64 is the evidence platform, and nothing is blocked on arm64
 hardware.
 
-### Pin Freshness In Rehearsals
+### Pin Freshness
 
 Smoke's final assertion is that the pins were current at build time. That is a
 source-hygiene check, not an artifact property, and the release `versions` job
-reports drift informationally. Both the candidate rehearsal and the release
-path run smoke without a waiver, so their evidence records
-`pinFreshness: "asserted"`. T3 0.0.42's platform-package migration restored a
-clean pin and removed the temporary rehearsal exception.
+reports drift informationally. The release path runs smoke without a waiver, so
+its evidence records `pinFreshness: "asserted"`. T3 0.0.42's platform-package
+migration restored a clean pin and removed the temporary rehearsal exception.
 
 ## Workflows
 
@@ -89,31 +88,6 @@ The tag path additionally gates on the assembled product and reports size:
 `lint` (shellcheck + `docker compose config`) and `versions`
 (`bump-versions.sh --check`, informational) are unchanged.
 
-### `toolchain-candidate.yml` - the fork rehearsal
-
-```sh
-gh workflow run toolchain-candidate.yml --ref <branch> \
-  -f targets="core browser" -f run_e2e=true
-```
-
-Builds every requested target for both architectures, pushes each by digest,
-runs the capability checks against the exact amd64 digest, and promotes the
-digests into candidate manifests:
-
-- `<target>-candidate` - moving rehearsal pointer;
-- `<target>-candidate-<short sha>` - run-scoped copy of the same manifest.
-  Re-running the workflow at the same commit overwrites it, so the evidence
-  records the promoted index digest (`manifestDigest`) as the immutable
-  reference, not the tag.
-
-The workflow refuses to run on the upstream repository (`dizys/*`), so a
-rehearsal can never publish to the upstream package. Official tag names are
-constructed nowhere in this workflow; a guard fails the job if a tag would not
-end in `-candidate`.
-
-Candidate evidence is collected in the `candidate-evidence.json` artifact (see
-below) and the run summary.
-
 ## Capability Matrix
 
 Checks are selected by declared capability, never inferred from a binary or a
@@ -134,9 +108,8 @@ tag. `--variant` is passed explicitly for the scripts that select profiles.
 
 Notes:
 
-- **The E2E is a named capability**, so `candidate-tested-<target>.json` records
-  that the promoted digest passed it. A failure prevents the tested artifact
-  from being written, which prevents promotion.
+- **The E2E is a release capability.** A failure prevents the tested build
+  evidence from being written, which prevents promotion.
 - **Harness lifecycle checks run on both targets.** They install exact versions
   through the manager and assert the managed contract; the E2E adds T3's own
   provider launches and recreation on top.
@@ -152,9 +125,6 @@ Markdown summary to the run page.
 | Artifact | Written by | Contents |
 | --- | --- | --- |
 | `build-evidence-<target>-<platform>` (build.yml, tags) | build job, after smoke, E2E and measurement passed on amd64 | `build-<target>-<platform>.json` |
-| `candidate-build-<target>-<platform>` | candidate build job | `build-<target>-<platform>.json` |
-| `candidate-tested-<target>` | candidate test job, after every check passed | `tested-<target>.json` |
-| `candidate-evidence` | candidate promote job | one JSON array: the promoted manifest, its members, and the promotion rule |
 
 Evidence record shape:
 
@@ -177,19 +147,17 @@ Evidence record shape:
 
 `digest` is the platform manifest (the promoted member and, for amd64, the
 artifact the checks ran against); `indexDigest` is the pushed index buildx
-returned, which is what promotion copies. In the candidate path, `tested` is
-`true` only in the test job's artifact, and only when every check step passed;
-the release path marks its amd64 record `tested: true` after smoke, E2E and
-measurement, so `merge` can apply the same gate. The promotion job reads the
-amd64 platform digest *only* from the tested artifact, so a build that was never
-tested cannot be promoted even if its build artifact exists.
+returned, which is what promotion copies. The release path marks its amd64
+record `tested: true` only after smoke, E2E and measurement, so `merge` can apply
+the gate. A build that was never tested cannot be promoted even if its build
+artifact exists.
 
-## Failure Rehearsal
+## Promotion Gate Verification
 
-The gate is exercised by a rehearsal run on a scratch ref where the amd64
-checks fail: the test job fails at the smoke step and writes no
-`tested-<target>.json`, so `promote` is skipped (it needs every test job) and no
-candidate manifest or `candidate-evidence` artifact is created.
+Before delivery, the gate was exercised in the fork with an injected amd64
+smoke failure. The test job wrote no tested evidence, so promotion was skipped.
+The fork-only rehearsal workflow used for that proof was removed after delivery
+and is not part of the upstream maintenance surface.
 
 The script-level gate is exercised the same way in CI and locally:
 
@@ -203,7 +171,7 @@ scripts/verify-promoted-manifest.sh \
 scripts/verify-promoted-manifest.sh --platforms linux/amd64 ghcr.io/you/t3code:core-candidate
 ```
 
-## Current Evidence
+## Recorded Delivery Evidence
 
 Final-target rehearsal, 2026-09-18, source
 `d371bf6ade0f1f8b45c8e4d94bca82859701462e`
@@ -230,7 +198,7 @@ Measured from the pulled amd64 digests (startup is the first healthy response):
 
 Both records are `tested: true`. That rehearsal predated the T3 0.0.42
 distribution migration and temporarily recorded `pinFreshness: "waived"`; the
-current candidate and release workflows run strict smoke checks and record
+release workflow now runs strict smoke checks and records
 `pinFreshness: "asserted"`. The local dry runs at the same source passed 147/0
 checks on `core` and 156/0 on `browser`.
 
@@ -261,14 +229,14 @@ skipped because a test job failed, and the run produced build evidence only - no
 - **Startup timing through the registry.** `measure-image.sh` registry mode
   cannot time a boot; CI stores compressed/unpacked sizes and the local
   measurement in the test job records startup from the pulled digest.
-- **Registry-mode measurement of a private fork package.** `measure-image.sh
-  --registry` authenticates anonymously. The candidate rehearsal measures
-  locally instead; the registry path stays for public references.
+- **Registry-mode measurement of a private package.** `measure-image.sh
+  --registry` authenticates anonymously; the registry path is intended for
+  public references.
 
 ## Reproducing Locally
 
 ```sh
-# Build and prove one target exactly like the candidate workflow's amd64 leg:
+# Build and prove one target locally:
 scripts/build.sh --target core --tag t3code:core
 scripts/test-image-inventory.sh --variant core t3code:core
 scripts/smoke-test.sh --variant core t3code:core
