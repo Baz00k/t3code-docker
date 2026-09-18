@@ -62,9 +62,18 @@ retry() { local n=$1; shift; local i; for i in $(seq 1 "$n"); do
 STATE_MOUNT=""
 PAGE_HTML=""
 CLIENT_JS_COPY=""
+# The layout audit's findings are only worth keeping when it fails, but that is
+# exactly when they matter: the check itself runs with its output discarded, so
+# record them here and print them with the failure summary.
+UI_AUDIT_LOG="${UI_AUDIT_LOG:-}"
+if [ -z "$UI_AUDIT_LOG" ]; then
+  UI_AUDIT_LOG="$(mktemp "${TMPDIR:-/tmp}/t3-ui-audit.XXXXXX")"
+  UI_AUDIT_LOG_CREATED=1
+fi
 cleanup() {
   docker rm -f "$NAME" "${NAME}-mount" "${NAME}-boot" "${NAME}-anon" "${NAME}-env" >/dev/null 2>&1 || true
   rm -f "$PAGE_HTML" "$CLIENT_JS_COPY" 2>/dev/null || true
+  [ "${UI_AUDIT_LOG_CREATED:-0}" = 1 ] && rm -f "$UI_AUDIT_LOG" 2>/dev/null || true
   if [ -n "$STATE_MOUNT" ]; then
     sudo rm -rf "$STATE_MOUNT" 2>/dev/null || rm -rf "$STATE_MOUNT" 2>/dev/null || true
   fi
@@ -589,7 +598,7 @@ console_layout_is_clean() {
     -e NODE_PATH=/opt/npm-global/lib/node_modules/@playwright/mcp/node_modules \
     -e CHROME_PATH=/usr/bin/chromium \
     "$NAME" node /tmp/ui-audit.js "http://127.0.0.1:3774/" "$SETUP_KEY" \
-    >"${UI_AUDIT_LOG:-/dev/null}" 2>&1
+    >"$UI_AUDIT_LOG" 2>&1
 }
 check "the console has no layout defects" console_layout_is_clean
 
@@ -671,4 +680,9 @@ fi
 docker rm -f "${NAME}-boot" >/dev/null 2>&1 || true
 
 printf '\n%d passed, %d failed\n\n' "$pass" "$fail"
+if [ "$fail" -gt 0 ] && [ -s "$UI_AUDIT_LOG" ]; then
+  printf 'Console layout audit output:\n'
+  sed 's/^/  /' "$UI_AUDIT_LOG"
+  printf '\n'
+fi
 [ "$fail" -eq 0 ]

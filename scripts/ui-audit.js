@@ -234,7 +234,15 @@ const audit = () => {
   let total = 0;
 
   for (const [width, height] of VIEWPORTS) {
-    const ctx = await browser.newContext({ viewport: { width, height }, deviceScaleFactor: 2 });
+    // Measure a settled page: reduced motion disables the transitions and
+    // animations the stylesheet already gates behind that preference, so a
+    // background poll cannot repaint a row mid-measurement and leave
+    // half-updated geometry behind.
+    const ctx = await browser.newContext({
+      viewport: { width, height },
+      deviceScaleFactor: 2,
+      reducedMotion: "reduce",
+    });
     const page = await ctx.newPage();
     await page.goto(URL, { waitUntil: "domcontentloaded" });
     await page.fill("input[type=password]", KEY);
@@ -246,6 +254,13 @@ const audit = () => {
     // The pairing panel is where the tracker lives, so open it.
     await page.click("#mint");
     await page.waitForSelector("#out .tc-steps", { timeout: 30000 });
+    // Text metrics decide the boxes this audit compares, so wait for fonts
+    // before measuring, then let the browser render two frames of the settled
+    // layout.
+    await page.evaluate(() => document.fonts.ready);
+    await page.evaluate(() => new Promise((resolve) => {
+      requestAnimationFrame(() => requestAnimationFrame(resolve));
+    }));
     await page.waitForTimeout(400);
 
     const findings = await page.evaluate(audit);
