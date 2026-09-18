@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 # Assert the persistent-ownership contract on one image.
 #
-#   scripts/test-ownership.sh [image]     (default: t3code:slim)
+#   scripts/test-ownership.sh [image]     (default: t3code:core)
 #
 # The unit under test is ownership migration and persistence diagnostics, not
 # the server:
@@ -23,7 +23,7 @@
 set -euo pipefail
 
 ROOT="$(cd "$(dirname "$0")/.." && pwd)"
-IMAGE="${1:-t3code:slim}"
+IMAGE="${1:-t3code:core}"
 PREFIX="t3ow-$$"
 MISE_VERSION="$(grep -m1 '^ARG MISE_VERSION=' "$ROOT/Dockerfile" | cut -d= -f2)"
 

@@ -13,7 +13,7 @@
  *
  * Exits non-zero when it finds something.
  */
-// Runs from a checkout with playwright installed, or inside the full image,
+// Runs from a checkout with playwright installed, or inside the browser image,
 // which already carries playwright-core and a chromium for the browser MCP.
 let chromium;
 try {

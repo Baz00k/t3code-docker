@@ -1,13 +1,11 @@
 #!/usr/bin/env bash
 # Boot the image and assert the things a user would notice if they broke.
 #
-#   scripts/smoke-test.sh [--variant NAME] [image]      (default: t3code:full)
+#   scripts/smoke-test.sh [--variant NAME] [image]      (default: t3code:core)
 #
 # Capability profiles (see docs/toolchain/image-contract.md):
-#   slim     transitional, baked harnesses, no toolchains, no browser
-#   full     transitional, baked harnesses + toolchains + browser
-#   core     final, installer + mise, no baked harnesses/runtimes/browser
-#   browser  final, core + Chromium/fonts/MCP servers
+#   core     default, installer + mise, no baked harnesses/runtimes/browser
+#   browser  core + Chromium/fonts/MCP servers
 #
 # The variant selects which capabilities are asserted; it is never inferred
 # from the presence of Chromium. When omitted it is inferred from the image
@@ -28,9 +26,9 @@ usage() {
   cat <<'USAGE'
 Usage: scripts/smoke-test.sh [--variant NAME] [image]
 
-  --variant NAME   slim | full | core | browser
+  --variant NAME   core | browser
                    (default: inferred from the image tag; required for digest refs)
-  image            image tag or digest reference (default: t3code:full)
+  image            image tag or digest reference (default: t3code:core)
 USAGE
 }
 
@@ -43,11 +41,11 @@ while [ $# -gt 0 ]; do
     *) IMAGE="$1"; shift ;;
   esac
 done
-[ -n "$IMAGE" ] || IMAGE="t3code:full"
+[ -n "$IMAGE" ] || IMAGE="t3code:core"
 
 case "$VARIANT" in
-  ""|slim|full|core|browser) ;;
-  *) echo "smoke-test.sh: variant must be slim, full, core, or browser" >&2; exit 2 ;;
+  ""|core|browser) ;;
+  *) echo "smoke-test.sh: variant must be core or browser" >&2; exit 2 ;;
 esac
 
 if [ -z "$VARIANT" ]; then
@@ -58,9 +56,7 @@ if [ -z "$VARIANT" ]; then
     *@sha256:*) tag="" ;;
   esac
   case "$tag" in
-    slim|full|core|browser) VARIANT="$tag" ;;
-    *-slim) VARIANT="slim" ;;
-    *-full) VARIANT="full" ;;
+    core|browser) VARIANT="$tag" ;;
     *-core) VARIANT="core" ;;
     *-browser) VARIANT="browser" ;;
     *)
@@ -81,15 +77,10 @@ fi
 
 # Explicit capability profile. Nothing below infers a capability from the
 # presence of Chromium or any other binary; the variant is the selector.
-HAS_BAKED_HARNESSES=0
-HAS_BAKED_TOOLCHAINS=0
-HAS_NONBROWSER_UNION=0
 HAS_BROWSER=0
 case "$VARIANT" in
-  slim)    HAS_BAKED_HARNESSES=1 ;;
-  full)    HAS_BAKED_HARNESSES=1; HAS_BAKED_TOOLCHAINS=1; HAS_NONBROWSER_UNION=1; HAS_BROWSER=1 ;;
-  core)    HAS_NONBROWSER_UNION=1 ;;
-  browser) HAS_NONBROWSER_UNION=1; HAS_BROWSER=1 ;;
+  core)    ;;
+  browser) HAS_BROWSER=1 ;;
 esac
 NAME="t3code-smoke-$$"
 PORT="${SMOKE_PORT:-13773}"
@@ -157,26 +148,20 @@ done
 
 printf '\nHarnesses (variant %s)\n' "$VARIANT"
 check "t3 runs" "docker exec $NAME t3 --version"
-if [ "$HAS_BAKED_HARNESSES" -eq 1 ]; then
-  for bin in claude codex opencode grok cursor-agent; do
-    check "$bin runs (baked)" "docker exec $NAME $bin --version"
-  done
-else
-  # Final images ship the installer, never the executables. The installer and
-  # its seams must be present; the baked paths must be absent so a stale
-  # fallback cannot masquerade as a managed install.
-  for bin in claude codex opencode grok cursor-agent; do
-    check "$bin has no baked executable" \
-      "! docker exec $NAME sh -c 'command -v $bin' >/dev/null 2>&1"
-  done
-  check "no baked npm harness remains" \
-    "! docker exec $NAME sh -c 'ls /opt/npm-global/bin/claude /opt/npm-global/bin/codex /opt/npm-global/bin/opencode /opt/npm-global/bin/grok 2>/dev/null'"
-  check "no baked cursor remains" \
-    "! docker exec $NAME test -x /opt/cursor/.local/bin/cursor-agent"
-  check "mise ships" "docker exec $NAME mise --version"
-  check "harness installer ships" "docker exec $NAME t3-harness --help"
-  check "provider integration ships" "docker exec $NAME test -r /opt/t3-provider/cli.mjs"
-fi
+# Final images ship the installer, never the executables. The installer and
+# its seams must be present; the baked paths must be absent so a stale
+# fallback cannot masquerade as a managed install.
+for bin in claude codex opencode grok cursor-agent; do
+  check "$bin has no baked executable" \
+    "! docker exec $NAME sh -c 'command -v $bin' >/dev/null 2>&1"
+done
+check "no baked npm harness remains" \
+  "! docker exec $NAME sh -c 'ls /opt/npm-global/bin/claude /opt/npm-global/bin/codex /opt/npm-global/bin/opencode /opt/npm-global/bin/grok 2>/dev/null'"
+check "no baked cursor remains" \
+  "! docker exec $NAME test -x /opt/cursor/.local/bin/cursor-agent"
+check "mise ships" "docker exec $NAME mise --version"
+check "harness installer ships" "docker exec $NAME t3-harness --help"
+check "provider integration ships" "docker exec $NAME test -r /opt/t3-provider/cli.mjs"
 
 # T3 Code states the versions it needs in its own bundle, and it enforces them
 # at runtime: too old a `gh` and it reports "GitHub CLI is too old to report
@@ -219,27 +204,12 @@ else
   no "gh ${GH_INSTALLED:-?} is below the ${GH_DECLARED:-?} T3 Code requires"
 fi
 
-opencode_meets_t3_minimum() {
-  local declared installed
-  declared="$(docker exec "$NAME" sh -c \
-    "grep -o 'MINIMUM_OPENCODE_VERSION *= *\"[0-9][0-9.]*\"' $T3_BUNDLE | head -1" 2>/dev/null \
-    | grep -o '[0-9][0-9.]*' | head -1)"
-  [ -n "$declared" ] || return 0   # nothing declared upstream, nothing to hold to
-  installed="$(docker exec "$NAME" opencode --version 2>/dev/null | tr -d '\r' | head -1)"
-  [ -n "$installed" ] || return 1
-  OC_DECLARED="$declared"; OC_INSTALLED="$installed"
-  version_at_least "$installed" "$declared"
-}
-if [ "$HAS_BAKED_HARNESSES" -eq 1 ]; then
-  if opencode_meets_t3_minimum; then
-    ok "opencode ${OC_INSTALLED:-?} meets the ${OC_DECLARED:-?} T3 Code requires"
-  else
-    no "opencode ${OC_INSTALLED:-?} is below the ${OC_DECLARED:-?} T3 Code requires"
-  fi
-else
-  check "no baked opencode to hold to a minimum" \
-    "! docker exec $NAME sh -c 'command -v opencode' >/dev/null 2>&1"
-fi
+# T3 Code also enforces a minimum OpenCode version, but final images have no
+# baked opencode to hold to it: the harness manager records the resolved exact
+# version on explicit install, and the TM-12 E2E installs the latest and
+# asserts T3 launches it. Here just prove no stale bake can mask an update.
+check "no baked opencode to hold to a minimum" \
+  "! docker exec $NAME sh -c 'command -v opencode' >/dev/null 2>&1"
 
 # A freshly built image that immediately asks you to upgrade an agent is a bug
 # in this repo, not in the agent. The pins are what go stale, so assert they
@@ -272,39 +242,24 @@ for bin in node python3 git gh; do
 done
 check "mise present" "have mise"
 
-if [ "$HAS_NONBROWSER_UNION" -eq 1 ]; then
-  printf '\nNon-browser toolchain packages (core union)\n'
-  for bin in clang cmake ffmpeg; do
-    check "$bin present" "have $bin"
-  done
-  check "postgresql client present" "have psql"
-  check "gdb present" "have gdb"
-else
-  printf '\nNon-browser toolchain packages (slim has none baked)\n'
-  # slim intentionally carries only the base OS set; the union lives in
-  # core/browser/full. Assert nothing here so the transitional target stays
-  # exactly as it was.
-  ok "slim carries only the base OS set (no union assertion)"
-fi
+printf '\nNon-browser toolchain packages (core union)\n'
+for bin in clang cmake ffmpeg; do
+  check "$bin present" "have $bin"
+done
+check "postgresql client present" "have psql"
+check "gdb present" "have gdb"
 
-if [ "$HAS_BAKED_TOOLCHAINS" -eq 1 ]; then
-  printf '\nBaked language runtimes (transitional full only)\n'
-  for bin in go rustc cargo bun deno uv; do
-    check "$bin present (baked)" "have $bin"
-  done
-else
-  printf '\nBaked language runtimes (none expected in %s)\n' "$VARIANT"
-  # Root has no mise shims on PATH by design, so a bare lookup as root only
-  # finds a baked runtime. All of these live outside /home/t3 on purpose.
-  for bin in go rustc cargo bun deno uv; do
-    check "$bin has no baked runtime" "! docker exec $NAME sh -c 'command -v $bin' >/dev/null 2>&1"
-  done
-  check "no baked Go tree" "! docker exec $NAME test -e /usr/local/go/bin/go"
-  check "no baked Rust tree" "! docker exec $NAME test -e /usr/local/cargo/bin/rustc"
-  check "no baked Bun" "! docker exec $NAME test -e /usr/local/bun/bin/bun"
-  check "no baked Deno" "! docker exec $NAME test -e /usr/local/deno/bin/deno"
-  check "no baked uv" "! docker exec $NAME test -e /usr/local/bin/uv"
-fi
+printf '\nBaked language runtimes (none expected in %s)\n' "$VARIANT"
+# Root has no mise shims on PATH by design, so a bare lookup as root only
+# finds a baked runtime. All of these live outside /home/t3 on purpose.
+for bin in go rustc cargo bun deno uv; do
+  check "$bin has no baked runtime" "! docker exec $NAME sh -c 'command -v $bin' >/dev/null 2>&1"
+done
+check "no baked Go tree" "! docker exec $NAME test -e /usr/local/go/bin/go"
+check "no baked Rust tree" "! docker exec $NAME test -e /usr/local/cargo/bin/rustc"
+check "no baked Bun" "! docker exec $NAME test -e /usr/local/bun/bin/bun"
+check "no baked Deno" "! docker exec $NAME test -e /usr/local/deno/bin/deno"
+check "no baked uv" "! docker exec $NAME test -e /usr/local/bin/uv"
 
 if [ "$HAS_BROWSER" -eq 1 ]; then
   printf '\nBrowser (variant %s)\n' "$VARIANT"
@@ -336,18 +291,11 @@ if [ "$HAS_BROWSER" -eq 1 ]; then
     "docker exec $NAME t3-browser-mcp --server playwright --print | grep -q playwright-mcp"
   check "t3-browser-mcp prints chrome-devtools server" \
     "docker exec $NAME t3-browser-mcp --server chrome-devtools --print | grep -q chrome-devtools-mcp"
-  if [ "$HAS_BAKED_HARNESSES" -eq 1 ]; then
-    check "t3-browser-mcp registers with opencode" \
-      "docker exec $NAME t3-browser-mcp --harness opencode"
-    check "opencode config records the mcp server" \
-      "docker exec -u t3 $NAME jq -e '.mcp.playwright.enabled' /home/t3/.config/opencode/opencode.json"
-  else
-    # No baked harness to register with; the registration path with managed
-    # harnesses is covered by test-provider-integration.sh on the browser
-    # image. Here just prove the helper does not fail without one.
-    check "t3-browser-mcp runs with no baked harness" \
-      "docker exec $NAME t3-browser-mcp --harness opencode"
-  fi
+  # No baked harness to register with; the registration path with managed
+  # harnesses is covered by test-provider-integration.sh on the browser
+  # image. Here just prove the helper does not fail without one.
+  check "t3-browser-mcp runs with no baked harness" \
+    "docker exec $NAME t3-browser-mcp --harness opencode"
 else
   printf '\nBrowser (none expected in %s)\n' "$VARIANT"
   check "no chromium" "! docker exec $NAME sh -c 'command -v chromium' >/dev/null 2>&1"
@@ -468,24 +416,15 @@ sys.exit(0 if img.get('version') and img.get('variant') == '$want' else 1)"
 check "the image build is stamped and reported ($VARIANT)" version_is_stamped
 
 # Agent authentication, driven the way the page drives it.
-# Transitional images (baked harnesses) exercise the full sign-in flows.
-# Final images (no baked harnesses) exercise only the flows that do not need a
-# harness executable: file-backed OpenCode writes, env-var Claude detection,
-# definite Grok/Cursor negatives, and the provider catalog. Managed-harness
-# sign-in is covered by test-provider-integration.sh and the TM-12 E2E.
+# Images ship no baked harness, so these flows exercise only what does not need
+# a harness executable: file-backed OpenCode writes, honest unknown states, and
+# the provider catalog. Managed-harness sign-in is covered by
+# test-provider-integration.sh and the TM-12 E2E.
 printf '\nAgent authentication (variant %s)\n' "$VARIANT"
 auth_post() { docker exec "$NAME" sh -c "curl -sS -b /tmp/jar -H 'content-type: application/json' -d '$1' http://127.0.0.1:3774$2"; }
 
-if [ "$HAS_BAKED_HARNESSES" -eq 1 ]; then
-  codex_key_stored() {
-    auth_post '{"agent":"codex","key":"sk-smoke-test-key"}' /auth/apikey | grep -q '"ok":true' &&
-    docker exec -u t3 "$NAME" codex login status 2>&1 | grep -q "API key"
-  }
-  check "an API key signs Codex in" codex_key_stored
-else
-  check "codex has no baked binary to sign in with" \
-    "! docker exec $NAME sh -c 'command -v codex' >/dev/null 2>&1"
-fi
+check "codex has no baked binary to sign in with" \
+  "! docker exec $NAME sh -c 'command -v codex' >/dev/null 2>&1"
 
 opencode_key_stored() {
   auth_post '{"agent":"opencode","provider":"deepseek","key":"sk-smoke"}' /auth/apikey | grep -q '"ok":true' &&
@@ -496,52 +435,18 @@ check "an API key is written for OpenCode" opencode_key_stored
 check "an unknown agent is refused" \
   "auth_post '{\"agent\":\"bogus\",\"key\":\"x\"}' /auth/apikey | grep -q error"
 
-# The panel used to decide this from a credentials file on disk, which misses
-# every credential that never lands there. T3 Code honours ANTHROPIC_API_KEY and
-# CLAUDE_CODE_OAUTH_TOKEN, so a container holding one showed as authenticated in
-# T3 Code and "Not signed in" here. Ask each CLI instead, and assert both
-# directions: the reading has to change when the credential appears, or it is
-# not reading anything.
-setup_status() { docker exec "$1" sh -c \
-  "curl -sS --max-time 20 -b /tmp/envjar http://127.0.0.1:3774/status"; }
-
-env_token_reads_as_signed_in() {
-  docker rm -f "${NAME}-env" >/dev/null 2>&1 || true
-  docker run -d --name "${NAME}-env" -e T3_SETUP_KEY=envkey \
-    -e CLAUDE_CODE_OAUTH_TOKEN=sk-ant-oat01-smoke "$IMAGE" >/dev/null
-  retry 25 "docker exec ${NAME}-env sh -c \"curl -sS --max-time 5 -c /tmp/envjar \
-    -d 'key=envkey' -o /dev/null http://127.0.0.1:3774/login && \
-    curl -fsS --max-time 20 -b /tmp/envjar http://127.0.0.1:3774/status | grep -q harnesses\"" || return 1
-  setup_status "${NAME}-env" | python3 -c '
-import json, sys
-h = {a["id"]: a for a in json.load(sys.stdin)["harnesses"]}
-sys.exit(0 if h["claude"]["signedIn"] is True else 1)'
-}
-# Final images have no executable to probe, so the manager honestly reports
-# null (unknown) rather than True, even with an env-var credential. Managed
-# sign-in with an installed harness is covered by the TM-12 E2E; here just
-# prove the container boots with the credential and the endpoint answers.
-if [ "$HAS_BAKED_HARNESSES" -eq 1 ]; then
-  check "an env-var Claude credential reads as signed in" env_token_reads_as_signed_in
-else
-  ok "SKIP env-var Claude verdict (no executable to probe in $VARIANT; E2E covers managed)"
-fi
+# Harness executables are not baked, so there is no executable to probe: the
+# manager honestly reports null (unknown) even with an env-var credential.
+# Managed sign-in with an installed harness is covered by the TM-12 E2E.
+ok "SKIP env-var Claude verdict (no executable to probe in $VARIANT; E2E covers managed)"
 docker rm -f "${NAME}-env" >/dev/null 2>&1 || true
 
 # Reading it correctly once is not enough: a cached verdict would keep saying
 # "not signed in" straight after a key is stored, which is exactly when someone
 # is looking at the panel.
-# On final images there is no executable to probe, so /status honestly reports
-# null rather than True even after a key is stored (the file write itself is
-# proven by the OpenCode test above). The True flip with a managed install is
-# covered by the E2E.
-key_flips_signed_in() {
-  docker exec "$NAME" sh -c \
-    "curl -sS --max-time 20 -b /tmp/jar http://127.0.0.1:3774/status" | python3 -c '
-import json, sys
-h = {a["id"]: a for a in json.load(sys.stdin)["harnesses"]}
-sys.exit(0 if h["codex"]["signedIn"] is True and h["claude"]["signedIn"] is False else 1)'
-}
+# With no executable to probe, /status honestly reports null rather than True
+# even after a key is stored (the file write itself is proven by the OpenCode
+# test above). The True flip with a managed install is covered by the E2E.
 uninstalled_reports_unknown() {
   docker exec "$NAME" sh -c \
     "curl -sS --max-time 20 -b /tmp/jar http://127.0.0.1:3774/status" | python3 -c '
@@ -549,25 +454,13 @@ import json, sys
 h = {a["id"]: a for a in json.load(sys.stdin)["harnesses"]}
 sys.exit(0 if h["opencode"]["signedIn"] is None and h["codex"]["signedIn"] is None else 1)'
 }
-if [ "$HAS_BAKED_HARNESSES" -eq 1 ]; then
-  check "a stored key flips the panel without waiting for a cache" key_flips_signed_in
-else
-  check "an uninstalled harness reports unknown (not signed in) in $VARIANT" uninstalled_reports_unknown
-fi
+check "an uninstalled harness reports unknown (not signed in) in $VARIANT" uninstalled_reports_unknown
 
 # Grok has no status command, and its credentials file proves nothing - a file
 # of exactly the shape its own help text documents still leaves the CLI saying
 # "You are not authenticated". So the reading comes from `grok models`, the way
-# T3 Code does it, and a fresh transitional container must read as a definite
-# no rather than the "not readable" this used to show. A fresh final container
-# has no executable to probe, so it honestly reports unknown (null).
-grok_reads_definitely() {
-  docker exec "$NAME" sh -c \
-    "curl -sS --max-time 25 -b /tmp/jar http://127.0.0.1:3774/status" | python3 -c '
-import json, sys
-h = {a["id"]: a for a in json.load(sys.stdin)["harnesses"]}
-sys.exit(0 if h["grok"]["signedIn"] is False and h["cursor"]["signedIn"] is False else 1)'
-}
+# T3 Code does it. With no executable to probe, the honest reading is unknown
+# (null).
 grok_reports_unknown() {
   docker exec "$NAME" sh -c \
     "curl -sS --max-time 25 -b /tmp/jar http://127.0.0.1:3774/status" | python3 -c '
@@ -575,11 +468,7 @@ import json, sys
 h = {a["id"]: a for a in json.load(sys.stdin)["harnesses"]}
 sys.exit(0 if h["grok"]["signedIn"] is None and h["cursor"]["signedIn"] is None else 1)'
 }
-if [ "$HAS_BAKED_HARNESSES" -eq 1 ]; then
-  check "Grok and Cursor report a definite sign-in state" grok_reads_definitely
-else
-  check "Grok and Cursor report unknown without an executable in $VARIANT" grok_reports_unknown
-fi
+check "Grok and Cursor report unknown without an executable in $VARIANT" grok_reports_unknown
 
 # OpenCode takes a key per provider and there are over two hundred of them, so
 # the page offers the models.dev catalog rather than asking you to recall an id.
@@ -600,23 +489,9 @@ check "the provider picker offers a catalog the server accepts" provider_catalog
 # Claude renders its URL as an OSC-8 hyperlink wrapped over several lines;
 # scraping the visible text yields a truncated URL missing the PKCE challenge
 # and state, which would send you to a sign-in page that cannot complete.
-# These flows spawn the harness executable, so they only run where a baked
-# harness exists. Managed-harness flows are covered by the E2E.
-claude_url_complete() {
-  local id
-  id="$(auth_post '{"agent":"claude"}' /auth/signin | sed -n 's/.*"id":"\([^"]*\)".*/\1/p')"
-  [ -n "$id" ] || return 1
-  sleep 14
-  docker exec "$NAME" sh -c "curl -sS -b /tmp/jar 'http://127.0.0.1:3774/auth/session?id=$id'" \
-    | grep -q 'code_challenge' &&
-  docker exec "$NAME" sh -c "curl -sS -b /tmp/jar 'http://127.0.0.1:3774/auth/session?id=$id'" \
-    | grep -q '"state":"awaiting-code"'
-}
-if [ "$HAS_BAKED_HARNESSES" -eq 1 ]; then
-  check "Claude sign-in captures a complete OAuth URL" claude_url_complete
-else
-  ok "SKIP Claude OAuth URL (no baked harness in $VARIANT)"
-fi
+# These flows spawn the harness executable, so they need a managed install;
+# the TM-12 E2E covers them.
+ok "SKIP Claude OAuth URL (no baked harness in $VARIANT)"
 
 # Capturing the URL is half the flow; the code has to get back in. That prompt
 # runs the terminal in raw mode, where Enter arrives as CR - an LF is taken as
@@ -624,33 +499,7 @@ fi
 # panel saying "Submitting" for ever. A rejected code is the only exchange that
 # can be driven without an account, and it proves the same thing: the CLI read
 # the line, tried it, and answered. Stuck on "submitted" means it never did.
-claude_code_reaches_the_prompt() {
-  local id state
-  id="$(auth_post '{"agent":"claude"}' /auth/signin | sed -n 's/.*"id":"\([^"]*\)".*/\1/p')"
-  [ -n "$id" ] || return 1
-  sleep 14
-  auth_post "{\"id\":\"$id\",\"code\":\"bogusCode123#bogusState456\"}" /auth/code >/dev/null
-  state=submitted
-  for _ in $(seq 1 20); do
-    state="$(docker exec "$NAME" sh -c "curl -sS -b /tmp/jar 'http://127.0.0.1:3774/auth/session?id=$id'" \
-      | sed -n 's/.*"state":"\([^"]*\)".*/\1/p')"
-    [ "$state" != "submitted" ] && break
-    sleep 2
-  done
-  # And the verdict has to stick. The child is killed once its output says the
-  # code was rejected, and `script` reports that kill as a clean exit, which
-  # flipped the session to "done" a moment later - telling someone they were
-  # signed in when they had just been turned away. Re-read after it settles.
-  sleep 6
-  state="$(docker exec "$NAME" sh -c "curl -sS -b /tmp/jar 'http://127.0.0.1:3774/auth/session?id=$id'" \
-    | sed -n 's/.*"state":"\([^"]*\)".*/\1/p')"
-  [ "$state" = "failed" ]
-}
-if [ "$HAS_BAKED_HARNESSES" -eq 1 ]; then
-  check "a pasted code reaches the Claude prompt" claude_code_reaches_the_prompt
-else
-  ok "SKIP Claude pasted-code flow (no baked harness in $VARIANT)"
-fi
+ok "SKIP Claude pasted-code flow (no baked harness in $VARIANT)"
 
 # Waiting for the CLI to exit was the wrong finish line. These are terminal UIs;
 # one that prints its result and stays up is not a failure, but it left the
@@ -658,59 +507,15 @@ fi
 # so prove a session notices that with the process still running. Codex is the
 # one whose state can be flipped from outside mid-flow, so use it - signed out
 # first, since only a transition counts.
-signin_finishes_on_transition() {
-  local id state
-  docker exec -u t3 "$NAME" sh -c 'rm -f ~/.codex/auth.json'
-  id="$(auth_post '{"agent":"codex"}' /auth/signin | sed -n 's/.*"id":"\([^"]*\)".*/\1/p')"
-  [ -n "$id" ] || return 1
-  sleep 12
-  auth_post '{"agent":"codex","key":"sk-smoke-transition"}' /auth/apikey | grep -q '"ok":true' || return 1
-  for _ in $(seq 1 10); do
-    state="$(docker exec "$NAME" sh -c "curl -sS -b /tmp/jar 'http://127.0.0.1:3774/auth/session?id=$id'" \
-      | sed -n 's/.*"state":"\([^"]*\)".*/\1/p')"
-    [ "$state" = "done" ] && return 0
-    sleep 3
-  done
-  return 1
-}
-if [ "$HAS_BAKED_HARNESSES" -eq 1 ]; then
-  check "a sign-in finishes when the agent becomes signed in" signin_finishes_on_transition
-else
-  ok "SKIP sign-in transition flow (no baked harness in $VARIANT)"
-fi
+ok "SKIP sign-in transition flow (no baked harness in $VARIANT)"
 
 # Codex's default login starts a callback server on localhost:1455, which is
 # unreachable from a browser on any other machine - the redirect lands on the
 # user's own localhost. Any sign-in URL naming localhost is broken by
 # construction for a remote server, so assert against the whole class.
-codex_device_not_localhost() {
-  local id session
-  id="$(auth_post '{"agent":"codex"}' /auth/signin | sed -n 's/.*"id":"\([^"]*\)".*/\1/p')"
-  [ -n "$id" ] || return 1
-  sleep 13
-  session="$(docker exec "$NAME" sh -c "curl -sS -b /tmp/jar 'http://127.0.0.1:3774/auth/session?id=$id'")"
-  printf '%s' "$session" | grep -q 'auth.openai.com/codex/device' &&
-  ! printf '%s' "$session" | grep -q localhost
-}
-if [ "$HAS_BAKED_HARNESSES" -eq 1 ]; then
-  check "Codex signs in by device code, not a localhost callback" codex_device_not_localhost
-else
-  ok "SKIP Codex device flow (no baked harness in $VARIANT)"
-fi
+ok "SKIP Codex device flow (no baked harness in $VARIANT)"
 
-grok_device_code() {
-  local id
-  id="$(auth_post '{"agent":"grok"}' /auth/signin | sed -n 's/.*"id":"\([^"]*\)".*/\1/p')"
-  [ -n "$id" ] || return 1
-  sleep 12
-  docker exec "$NAME" sh -c "curl -sS -b /tmp/jar 'http://127.0.0.1:3774/auth/session?id=$id'" \
-    | grep -q 'accounts.x.ai'
-}
-if [ "$HAS_BAKED_HARNESSES" -eq 1 ]; then
-  check "Grok sign-in captures a device URL" grok_device_code
-else
-  ok "SKIP Grok device flow (no baked harness in $VARIANT)"
-fi
+ok "SKIP Grok device flow (no baked harness in $VARIANT)"
 
 # The page's script is built inside a template literal, so an escape can be
 # eaten on the way out and leave the browser with JavaScript that does not

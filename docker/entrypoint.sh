@@ -277,8 +277,8 @@ report_persistence
 # Hand T3 the harness manager's choice of executable. T3 watches its settings
 # file and re-reads it live, so a managed Install/Update/Uninstall reaches the
 # running server through the same write the setup console triggers. A missing
-# or degraded mise is not fatal: T3 keeps its own defaults and the transitional
-# baked harnesses stay usable until the product switch.
+# or degraded mise is not fatal: no binaryPath is written, and T3's provider
+# stays unconfigured rather than pointed at an executable that is not there.
 sync_managed_providers() {
   [ -r "$T3_PROVIDER_CLI" ] || return 0
   [ -x "$T3_INFRA_NODE" ] || return 0

@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 # Assert the mise toolchain contract on one image.
 #
-#   scripts/test-mise.sh [image]     (default: t3code:slim)
+#   scripts/test-mise.sh [image]     (default: t3code:core)
 #
 # The unit under test is project execution, not mise's backend coverage:
 #
@@ -20,7 +20,7 @@
 set -euo pipefail
 
 ROOT="$(cd "$(dirname "$0")/.." && pwd)"
-IMAGE="${1:-t3code:slim}"
+IMAGE="${1:-t3code:core}"
 NAME="t3code-mise-$$"
 OFFLINE="t3code-mise-offline-$$"
 HOME_VOLUME="t3code-mise-home-$$"

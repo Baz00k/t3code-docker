@@ -6,8 +6,8 @@
 # connected there is no host, so the agent cannot see anything it builds. This
 # gives the agent a browser that lives in the container instead.
 #
-# Registration runs through the harness the setup console installed when there
-# is one (the same executable T3 launches), and the baked harness otherwise.
+# Registration runs through the managed harness the setup console installed
+# (the same executable T3 launches). The final images ship no baked harness.
 set -euo pipefail
 
 # `docker exec` lands as root (the image sets no USER so the entrypoint can
@@ -44,8 +44,8 @@ Notes:
   * Chromium is sandboxed by the container already, so --no-sandbox is passed.
   * chrome-devtools-mcp officially supports Google Chrome rather than Debian's
     Chromium; it does work here, but playwright is the tested default.
-  * Each harness is registered through its managed executable when the setup
-    console installed one, and through the baked harness otherwise.
+  * Each harness is registered through its managed executable. Install the
+    harness (setup page or `t3-harness install`) before registering MCP with it.
 USAGE
 }
 
@@ -83,13 +83,13 @@ if [ "$print_only" -eq 1 ]; then
 fi
 
 if [ "$action" = "add" ] && ! command -v "$cmd" >/dev/null 2>&1; then
-  echo "t3-browser-mcp: $cmd is not installed (it ships in the 'full' image)" >&2
+  echo "t3-browser-mcp: $cmd is not installed (it ships in the 'browser' image)" >&2
   exit 1
 fi
 
-# The managed executable for a harness when one is runnable, else the baked
-# harness resolved from PATH (empty when neither exists).
-harness_exec() { # id baked-name
+# The managed executable for a harness when one is runnable, else the name
+# resolved from PATH (empty when neither exists).
+harness_exec() { # id name
   local managed=""
   if [ -r "$T3_PROVIDER_CLI" ] && [ -x "$T3_INFRA_NODE" ]; then
     managed="$("$T3_INFRA_NODE" "$T3_PROVIDER_CLI" resolve "$1" 2>/dev/null || true)"

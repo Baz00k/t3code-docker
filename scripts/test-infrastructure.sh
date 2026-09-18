@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 # Assert that T3 Code runs on immutable image infrastructure.
 #
-#   scripts/test-infrastructure.sh [image]     (default: t3code:slim)
+#   scripts/test-infrastructure.sh [image]     (default: t3code:core)
 #
 # The unit under test is isolation, not features:
 #
@@ -15,7 +15,7 @@
 #   - root gets neither the user npm prefix nor any user tool directory.
 set -euo pipefail
 
-IMAGE="${1:-t3code:slim}"
+IMAGE="${1:-t3code:core}"
 NAME="t3code-infra-$$"
 PORT="${INFRA_PORT:-13775}"
 PUBLIC_URL="https://infra.example.test"

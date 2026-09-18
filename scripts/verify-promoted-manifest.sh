@@ -24,7 +24,7 @@
 #   scripts/verify-promoted-manifest.sh \
 #     --expect "linux/amd64=$(jq -r .digest amd64.json)" \
 #     --expect "linux/arm64=$(jq -r .digest arm64.json)" \
-#     ghcr.io/you/t3code:slim
+#     ghcr.io/you/t3code:core
 #
 # Progress and the verdict go to stderr; --json writes machine-readable records
 # to stdout. Exit status is 0 only when every reference maps every expected

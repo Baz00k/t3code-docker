@@ -8,10 +8,9 @@
 # docs/toolchain/image-contract.md, not behavior:
 #
 #   - every target carries base + T3 infra + mise + the harness installer;
-#   - core preserves the required non-browser union (full minus browser);
+#   - core preserves the required non-browser union;
 #   - browser adds only Chromium/fonts/MCP on top of core;
-#   - core/browser contain no baked harness and no baked language runtime;
-#   - slim/full keep their transitional inventories unchanged.
+#   - neither target contains a baked harness or a baked language runtime.
 #
 # The variant selects the expected profile; it is never inferred from the
 # presence of Chromium. When omitted it is inferred from the image tag;
@@ -25,7 +24,7 @@ usage() {
   cat <<'USAGE'
 Usage: scripts/test-image-inventory.sh [--variant NAME] [image]
 
-  --variant NAME   slim | full | core | browser
+  --variant NAME   core | browser
                    (default: inferred from the image tag; required for digest refs)
   image            image tag or digest reference (default: t3code:core)
 USAGE
@@ -43,8 +42,8 @@ done
 [ -n "$IMAGE" ] || IMAGE="t3code:core"
 
 case "$VARIANT" in
-  ""|slim|full|core|browser) ;;
-  *) echo "test-image-inventory.sh: variant must be slim, full, core, or browser" >&2; exit 2 ;;
+  ""|core|browser) ;;
+  *) echo "test-image-inventory.sh: variant must be core or browser" >&2; exit 2 ;;
 esac
 
 if [ -z "$VARIANT" ]; then
@@ -53,9 +52,7 @@ if [ -z "$VARIANT" ]; then
     *@sha256:*) tag="" ;;
   esac
   case "$tag" in
-    slim|full|core|browser) VARIANT="$tag" ;;
-    *-slim) VARIANT="slim" ;;
-    *-full) VARIANT="full" ;;
+    core|browser) VARIANT="$tag" ;;
     *-core) VARIANT="core" ;;
     *-browser) VARIANT="browser" ;;
     *)
@@ -75,15 +72,10 @@ fi
 # Expected capabilities. Mirrors scripts/smoke-test.sh and
 # docs/toolchain/image-contract.md; nothing here probes for a binary to
 # decide what to expect.
-HAS_BAKED_HARNESSES=0
-HAS_BAKED_TOOLCHAINS=0
-HAS_NONBROWSER_UNION=0
 HAS_BROWSER=0
 case "$VARIANT" in
-  slim)    HAS_BAKED_HARNESSES=1 ;;
-  full)    HAS_BAKED_HARNESSES=1; HAS_BAKED_TOOLCHAINS=1; HAS_NONBROWSER_UNION=1; HAS_BROWSER=1 ;;
-  core)    HAS_NONBROWSER_UNION=1 ;;
-  browser) HAS_NONBROWSER_UNION=1; HAS_BROWSER=1 ;;
+  core)    ;;
+  browser) HAS_BROWSER=1 ;;
 esac
 
 NAME="t3code-inventory-$$"
@@ -136,58 +128,36 @@ for bin in git python3 gh cloudflared; do
   check "$bin present (base)" "droot sh -c 'command -v $bin'"
 done
 
-printf '\nNon-browser OS union (core/browser/full only)\n'
-# The union is the full apt set minus Chromium/fonts. Checked via dpkg (the
+printf '\nNon-browser OS union (core/browser)\n'
+# The union is the old full apt set minus Chromium/fonts. Checked via dpkg (the
 # authoritative record) and via the user-visible binary where one exists.
 nonbrowser_pkgs="clang lld cmake pkg-config gdb ffmpeg imagemagick postgresql-client redis-tools"
-if [ "$HAS_NONBROWSER_UNION" -eq 1 ]; then
-  for pkg in $nonbrowser_pkgs; do
-    check "dpkg $pkg installed" "droot sh -c 'dpkg -l $pkg 2>/dev/null | grep -q \"^ii\"'"
-  done
-  for bin in clang cmake ffmpeg psql gdb; do
-    check "$bin present (union)" "droot sh -c 'command -v $bin'"
-  done
-  check "redis-cli present (union)" "droot sh -c 'command -v redis-cli'"
-else
-  for pkg in clang lld cmake gdb ffmpeg postgresql-client redis-tools; do
-    check "dpkg $pkg absent in slim" "! droot sh -c 'dpkg -l $pkg 2>/dev/null | grep -q \"^ii\"'"
-  done
-fi
+for pkg in $nonbrowser_pkgs; do
+  check "dpkg $pkg installed" "droot sh -c 'dpkg -l $pkg 2>/dev/null | grep -q \"^ii\"'"
+done
+for bin in clang cmake ffmpeg psql gdb; do
+  check "$bin present (union)" "droot sh -c 'command -v $bin'"
+done
+check "redis-cli present (union)" "droot sh -c 'command -v redis-cli'"
 
-printf '\nBaked harnesses (transitional slim/full only)\n'
-if [ "$HAS_BAKED_HARNESSES" -eq 1 ]; then
-  for bin in /opt/npm-global/bin/claude /opt/npm-global/bin/codex \
-             /opt/npm-global/bin/opencode /opt/npm-global/bin/grok \
-             /opt/cursor/.local/bin/cursor-agent; do
-    check "baked $bin present" "droot test -x $bin"
-  done
-else
-  for bin in /opt/npm-global/bin/claude /opt/npm-global/bin/codex \
-             /opt/npm-global/bin/opencode /opt/npm-global/bin/grok \
-             /opt/cursor/.local/bin/cursor-agent; do
-    check "no baked $bin" "! droot test -e $bin"
-  done
-  for bin in claude codex opencode grok cursor-agent; do
-    check "no $bin on root PATH" "! droot sh -c 'command -v $bin'"
-  done
-fi
+printf '\nBaked harnesses (none in any target)\n'
+for bin in /opt/npm-global/bin/claude /opt/npm-global/bin/codex \
+           /opt/npm-global/bin/opencode /opt/npm-global/bin/grok \
+           /opt/cursor/.local/bin/cursor-agent; do
+  check "no baked $bin" "! droot test -e $bin"
+done
+for bin in claude codex opencode grok cursor-agent; do
+  check "no $bin on root PATH" "! droot sh -c 'command -v $bin'"
+done
 
-printf '\nBaked language runtimes (transitional full only)\n'
-if [ "$HAS_BAKED_TOOLCHAINS" -eq 1 ]; then
-  check "baked Go present" "droot test -x /usr/local/go/bin/go"
-  check "baked Rust present" "droot test -x /usr/local/cargo/bin/rustc"
-  check "baked Bun present" "droot test -x /usr/local/bun/bin/bun"
-  check "baked Deno present" "droot test -x /usr/local/deno/bin/deno"
-  check "baked uv present" "droot test -x /usr/local/bin/uv"
-else
-  check "no baked Go" "! droot test -e /usr/local/go/bin/go"
-  check "no baked Rust" "! droot test -e /usr/local/cargo/bin/rustc"
-  check "no baked Bun" "! droot test -e /usr/local/bun/bin/bun"
-  check "no baked Deno" "! droot test -e /usr/local/deno/bin/deno"
-  check "no baked uv" "! droot test -e /usr/local/bin/uv"
-fi
+printf '\nBaked language runtimes (none in any target)\n'
+check "no baked Go" "! droot test -e /usr/local/go/bin/go"
+check "no baked Rust" "! droot test -e /usr/local/cargo/bin/rustc"
+check "no baked Bun" "! droot test -e /usr/local/bun/bin/bun"
+check "no baked Deno" "! droot test -e /usr/local/deno/bin/deno"
+check "no baked uv" "! droot test -e /usr/local/bin/uv"
 
-printf '\nBrowser capability (full/browser only)\n'
+printf '\nBrowser capability (browser only)\n'
 if [ "$HAS_BROWSER" -eq 1 ]; then
   check "dpkg chromium installed" "droot sh -c 'dpkg -l chromium 2>/dev/null | grep -q \"^ii\"'"
   check "chromium present" "droot sh -c 'command -v chromium'"

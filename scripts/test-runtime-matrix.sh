@@ -3,8 +3,8 @@
 #
 #   scripts/test-runtime-matrix.sh [image]     (default: t3code:core)
 #
-# The unit under test is that the final images can provide the toolchains the
-# transitional `full` used to bake, without an image rebuild:
+# The unit under test is that the images can provide the toolchains the old
+# `full` target used to bake, without an image rebuild:
 #
 #   - Go, Rust, Bun, Deno, uv, and representative Node/Python via mise;
 #   - Rust includes the promised clippy and rustfmt components;

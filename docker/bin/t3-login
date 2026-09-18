@@ -44,7 +44,8 @@ Run this with a TTY:  docker compose exec -it t3code t3-login claude
 Then enable the provider in T3 Code under Settings > Providers.
 
 A harness installed through the setup console signs in with its managed
-executable; otherwise this uses the harness baked into the image.
+executable. The final images bake no harness, so install one first
+(`t3-harness install <id>`) if nothing is resolved.
 
 `connect` authorizes this environment for T3 Connect. It does not start or
 disturb the running server - the link takes effect on the next start, so
@@ -52,9 +53,9 @@ restart the container afterwards.
 USAGE
 }
 
-# The managed executable for a harness when one is runnable, else the baked
-# harness resolved from PATH (empty when neither exists).
-harness_exec() { # id baked-name
+# The managed executable for a harness when one is runnable, else the name
+# resolved from PATH (empty when neither exists).
+harness_exec() { # id name
   local managed=""
   if [ -r "$T3_PROVIDER_CLI" ] && [ -x "$T3_INFRA_NODE" ]; then
     managed="$("$T3_INFRA_NODE" "$T3_PROVIDER_CLI" resolve "$1" 2>/dev/null || true)"
@@ -79,7 +80,7 @@ case "$harness" in
       grok)     bin="$(harness_exec grok grok)";         args=(login) ;;
     esac
     if [ -z "$bin" ]; then
-      echo "t3-login: $harness is not installed in this image" >&2
+      echo "t3-login: $harness is not installed; install it with t3-harness install $harness" >&2
       exit 1
     fi
     cmd=("$bin" "${args[@]}")

@@ -2,7 +2,7 @@
 # Assert T3 Code is wired to the managed harness executables.
 #
 #   scripts/test-provider-integration.sh [image] [browser-image]
-#       (defaults: t3code:slim, t3code:full)
+#       (defaults: t3code:core, t3code:browser)
 #
 # The unit under test is the provider seam, on one real amd64 image:
 #
@@ -22,8 +22,8 @@
 set -euo pipefail
 
 ROOT="$(cd "$(dirname "$0")/.." && pwd)"
-IMAGE="${1:-t3code:slim}"
-BROWSER_IMAGE="${2:-t3code:full}"
+IMAGE="${1:-t3code:core}"
+BROWSER_IMAGE="${2:-t3code:browser}"
 NAME="t3code-provider-$$"
 BROWSER_NAME="t3code-provider-browser-$$"
 VOLUME="t3code-provider-home-$$"
@@ -37,11 +37,11 @@ STATE=/home/t3/.t3
 SETTINGS="${STATE}/userdata/settings.json"
 STATE_FILE="${STATE}/provider-integration.json"
 
-# The versions the transitional images bake, so a managed install is the same
-# exact artifact the fallback would otherwise provide.
-CLAUDE_VERSION=2.1.270
+# Exact versions to install through the manager, so the test exercises the
+# same resolved artifact a user install would.
+CLAUDE_VERSION=2.1.274
 CODEX_VERSION=0.154.0
-OPENCODE_VERSION=1.18.30
+OPENCODE_VERSION=1.18.31
 
 pass=0
 fail=0

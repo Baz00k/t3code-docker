@@ -1,30 +1,31 @@
 #!/usr/bin/env bash
 # Assert the harness lifecycle surfaces share one manager.
 #
-#   scripts/test-harness-surfaces.sh [image]     (default: t3code:slim)
+#   scripts/test-harness-surfaces.sh [image]     (default: t3code:core)
 #
 # The unit under test is TM-08 on one real amd64 image: the Agents card's
 # lifecycle endpoints and the noninteractive `t3-harness` CLI over the shared
-# harness manager, with the transitional baked harnesses as fallback.
+# harness manager. The final images bake no harness, so the fallback field is
+# asserted absent rather than present.
 #
 #   - unauthenticated lifecycle reads and mutations are rejected (401);
 #   - GET /harnesses and /status expose the same five managed facts the CLI
-#     reports: exact versions, runnable state, failures, and baked fallback;
+#     reports: exact versions, runnable state, failures, and no baked fallback;
 #   - read-only polling changes no mise selection, config, or manager state;
 #   - explicit-version install/update via UI and CLI agree, and uninstall
-#     preserves credentials while reporting the baked fallback;
+#     preserves credentials while reporting no baked fallback;
 #   - a concurrent operation is refused with busy/409 on both surfaces;
 #   - prefixed routes (/__setup/...) answer the same JSON;
 #   - the CLI works as root (dropping to t3) and leaves t3-owned state.
 #
 # The setup server and the harness modules are copied into the container so a
 # run tests the checkout, not a stale build. Only three npm harnesses are
-# installed; cursor/grok exercise fallback and validation paths without their
-# large downloads.
+# installed; cursor/grok exercise validation paths without their large
+# downloads.
 set -euo pipefail
 
 ROOT="$(cd "$(dirname "$0")/.." && pwd)"
-IMAGE="${1:-t3code:slim}"
+IMAGE="${1:-t3code:core}"
 NAME="t3code-surfaces-$$"
 VOLUME="t3code-surfaces-home-$$"
 SETUP_PORT="${SURFACES_PORT:-13778}"
@@ -155,7 +156,7 @@ for id in claude codex opencode grok cursor; do
   has "$id exposes runnable state" '"runnable":' "$one"
   has "$id exposes exact versions" '"installedVersion":' "$one"
   has "$id exposes failure state" '"failed":' "$one"
-  has "$id exposes the baked fallback" '"bakedFallback":' "$one"
+  has "$id exposes fallback state" '"bakedFallback":' "$one"
   has "$id exposes sign-in actions" '"canSignIn":' "$one"
 done
 status_body="$(api GET /status)"
@@ -163,7 +164,7 @@ is "status carries five harnesses" "5" "$(field '.harnesses | length' "$status_b
 has "status harnesses carry runnable state" '"runnable":' "$status_body"
 has "status harnesses carry fallback state" '"bakedFallback":' "$status_body"
 for id in claude codex opencode grok cursor; do
-  is "$id reports a baked fallback in transition" "true" \
+  is "$id reports no baked fallback" "false" \
     "$(field ".harnesses[] | select(.id == \"$id\") | .bakedFallback.present" "$harnesses")"
   is "$id starts unmanaged" "false" \
     "$(field ".harnesses[] | select(.id == \"$id\") | .installed" "$harnesses")"
@@ -210,12 +211,12 @@ is "update records the new exact version" "$OPENCODE_UPDATE" \
 has "update keeps the replaced version" "$OPENCODE_VERSION" \
   "$(field '.harness.managedVersions | join(",")' "$op_update")"
 
-section "Credentials survive uninstall with a fallback"
+section "Credentials survive uninstall"
 dex sh -c 'mkdir -p /home/t3/.local/share/opencode && printf "%s" "{\"anthropic\":{\"type\":\"api\",\"key\":\"surfaces-key\"}}" > /home/t3/.local/share/opencode/auth.json'
 ui_uninstall="$(api POST /harnesses/uninstall '{"id":"opencode"}')"
 is "UI uninstall reports ok" "true" "$(field '.ok' "$ui_uninstall")"
 is "the harness is no longer installed" "false" "$(field '.harness.installed' "$ui_uninstall")"
-is "the baked fallback is still reported" "true" \
+is "no baked fallback remains" "false" \
   "$(field '.harness.bakedFallback.present' "$ui_uninstall")"
 is "credentials were preserved" "surfaces-key" \
   "$(dex sh -c 'cat /home/t3/.local/share/opencode/auth.json' | jq -r '.anthropic.key')"

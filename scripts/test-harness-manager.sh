@@ -1,12 +1,12 @@
 #!/usr/bin/env bash
 # Assert the persistent harness manager against one real image.
 #
-#   scripts/test-harness-manager.sh [image]     (default: t3code:slim)
+#   scripts/test-harness-manager.sh [image]     (default: t3code:core)
 #
 # The unit under test is the catalogue's lifecycle against the pinned mise
 # release on a real amd64 host: exact-version install for all five harnesses,
 # read-only status and resolution, concurrency and interrupted-operation
-# recovery, credential-preserving uninstall, the baked transition fallback, and
+# recovery, credential-preserving uninstall with no baked fallback, and
 # persistence across container recreation.
 #
 # The module is copied into the container rather than assumed to be baked into
@@ -15,7 +15,7 @@
 set -euo pipefail
 
 ROOT="$(cd "$(dirname "$0")/.." && pwd)"
-IMAGE="${1:-t3code:slim}"
+IMAGE="${1:-t3code:core}"
 NAME="t3code-harness-$$"
 VOLUME="t3code-harness-home-$$"
 PORT="${HARNESS_PORT:-13777}"
@@ -199,7 +199,7 @@ for id in claude codex opencode grok cursor; do
   is "$id is not configured" "false" "$(field '.configured' "$facts")"
   is "$id is not installed" "false" "$(field '.installed' "$facts")"
   is "$id does not appear runnable" "false" "$(field '.runnable' "$facts")"
-  is "$id reports a baked fallback" "true" "$(field '.bakedFallback.present' "$facts")"
+  is "$id reports no baked fallback" "false" "$(field '.bakedFallback.present' "$facts")"
   is "$id is not failed" "false" "$(field '.failed' "$facts")"
 done
 
@@ -286,7 +286,7 @@ is "the healed harness is runnable" "true" "$(field '.harness.runnable' "$healed
 is "the healed harness is not failed" "false" "$(field '.harness.failed' "$healed")"
 
 # --- credential-preserving uninstall -----------------------------------------
-section "Uninstall preserves credentials and reports the fallback"
+section "Uninstall preserves credentials and reports no fallback"
 CRED_FILE=/home/t3/.local/share/opencode/auth.json
 dex sh -c "mkdir -p /home/t3/.local/share/opencode && printf '%s' '{\"anthropic\":{\"type\":\"api\",\"key\":\"test-key\"}}' > $CRED_FILE"
 uninstall_out="$(driver uninstall opencode)"
@@ -294,7 +294,7 @@ is "uninstall succeeds" "true" "$(field '.ok' "$uninstall_out")"
 is "the harness is no longer configured" "false" "$(field '.harness.configured' "$uninstall_out")"
 is "the harness is no longer installed" "false" "$(field '.harness.installed' "$uninstall_out")"
 is "the managed executable is gone" "null" "$(field '.harness.executable' "$uninstall_out")"
-is "the baked fallback is still reported" "true" "$(field '.harness.bakedFallback.present' "$uninstall_out")"
+is "no baked fallback remains" "false" "$(field '.harness.bakedFallback.present' "$uninstall_out")"
 is "the credential surface is reported" "true" "$(field '.harness.credentials.present' "$uninstall_out")"
 is "credentials were preserved" "test-key" \
   "$(dex sh -c "cat $CRED_FILE" | jq -r '.anthropic.key')"

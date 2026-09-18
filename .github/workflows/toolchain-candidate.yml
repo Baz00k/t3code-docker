@@ -1,10 +1,11 @@
 name: toolchain-candidate
 
-# Rehearse a release without touching the official transitional tags: build all
-# requested targets for amd64 and arm64, prove the amd64 members with the
-# capability checks, then promote exactly the tested digests into candidate
-# manifests. See docs/toolchain/ci-evidence.md for the evidence contract and the
-# capability matrix, and `scripts/verify-promoted-manifest.sh` for the gate.
+# Rehearse a release without touching the official tags: build the requested
+# final targets for amd64 and arm64, prove the amd64 members with the capability
+# checks (including the final-target E2E), then promote exactly the tested
+# digests into candidate manifests. See docs/toolchain/ci-evidence.md for the
+# evidence contract and the capability matrix, and
+# `scripts/verify-promoted-manifest.sh` for the gate.
 #
 #   gh workflow run toolchain-candidate.yml --ref <branch> \
 #     -f targets="core browser" [-f run_e2e=false]
@@ -16,12 +17,12 @@ on:
   workflow_dispatch:
     inputs:
       targets:
-        description: Space-separated targets to build (slim full core browser)
+        description: Space-separated targets to build (core browser)
         required: false
-        default: slim full core browser
+        default: core browser
         type: string
       run_e2e:
-        description: Run the TM-12 transitional E2E script when it exists
+        description: Run the final-target E2E script on amd64
         required: false
         default: true
         type: boolean
@@ -61,33 +62,26 @@ jobs:
             dizys/*) echo "candidate rehearsals run in the fork, not upstream" >&2; exit 1 ;;
           esac
           # Checks are capabilities the variant advertises; see the matrix in
-          # docs/toolchain/ci-evidence.md. Transitional targets keep their baked
-          # fallback, so the harness lifecycle test asserts it, and both kinds
-          # of target run the offline check (which asserts the fallback the
-          # variant actually ships). Final targets cover the harness lifecycle
-          # through TM-12's E2E hook instead.
+          # docs/toolchain/ci-evidence.md. Every final target runs the full
+          # check set including the harness lifecycle checks and the E2E, and
+          # the tested evidence artifact names the E2E.
           capabilities() {
             case "$1" in
-              slim|full) echo "infrastructure,mise,ownership,harness,offline,inventory,smoke,measure" ;;
-              core|browser) echo "infrastructure,mise,ownership,offline,runtime,inventory,smoke,measure" ;;
+              core|browser) echo "infrastructure,mise,ownership,harness,offline,runtime,inventory,smoke,measure,e2e" ;;
             esac
-          }
-          needs_e2e() {
-            case "$1" in core|browser) echo true ;; *) echo false ;; esac
           }
           targets=""
           test_matrix="[]"
           for target in $REQUESTED; do
             case "$target" in
-              slim|full|core|browser) ;;
-              *) echo "unknown target '$target' (want slim full core browser)" >&2; exit 2 ;;
+              core|browser) ;;
+              *) echo "unknown target '$target' (want core browser)" >&2; exit 2 ;;
             esac
             targets="${targets}${targets:+,}$target"
             test_matrix="$(jq -cn \
               --argjson matrix "$test_matrix" --arg target "$target" \
               --arg checks "$(capabilities "$target")" \
-              --argjson e2e "$(needs_e2e "$target")" \
-              '$matrix + [{target:$target, checks:$checks, e2e:$e2e}]')"
+              '$matrix + [{target:$target, checks:$checks}]')"
           done
           [ -n "$targets" ] || { echo "no targets requested" >&2; exit 2; }
           matrix_json="$(jq -cn --argjson include "$test_matrix" '{include:$include}')"
@@ -124,7 +118,7 @@ jobs:
       - uses: actions/checkout@v4
 
       - name: Reclaim disk
-        if: matrix.target == 'full' || matrix.target == 'browser'
+        if: matrix.target == 'browser'
         run: |
           sudo rm -rf /usr/share/dotnet /usr/local/lib/android /opt/ghc \
                       /usr/local/share/boost "$AGENT_TOOLSDIRECTORY"
@@ -231,8 +225,8 @@ jobs:
     steps:
       - uses: actions/checkout@v4
 
-      # The full and browser images are several GB; the default runner does not
-      # have room for them alongside the measurement save below.
+      # The browser image is several GB; the default runner does not have room
+      # for it alongside the measurement save below.
       - name: Reclaim disk
         run: |
           sudo rm -rf /usr/share/dotnet /usr/local/lib/android /opt/ghc \
@@ -328,10 +322,11 @@ jobs:
         if: contains(matrix.checks, 'smoke')
         run: scripts/smoke-test.sh --variant "${{ matrix.target }}" "$IMAGE_REF"
 
-      # TM-12 owns scripts/test-toolchain-e2e.sh and the report. The hook is
-      # inert until that script lands, then every candidate run exercises it.
-      - name: Transitional E2E (when the script exists)
-        if: ${{ inputs.run_e2e && matrix.e2e && hashFiles('scripts/test-toolchain-e2e.sh') != '' }}
+      # The final-target E2E is the strongest assembled-product check the
+      # matrix runs; a failure prevents tested-<target>.json, so the digest is
+      # only promoted if it passed.
+      - name: Final-target E2E
+        if: ${{ inputs.run_e2e && contains(matrix.checks, 'e2e') }}
         run: scripts/test-toolchain-e2e.sh --variant "$T3C_VARIANT" "$T3C_IMAGE"
 
       # Measured from the pulled digest, so the startup timing belongs to the

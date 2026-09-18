@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 # Assert setup status stays offline-safe (TM-09).
 #
-#   scripts/test-offline.sh [--variant NAME] [image]     (default: t3code:slim)
+#   scripts/test-offline.sh [--variant NAME] [image]     (default: t3code:core)
 #
 # The unit under test is the offline contract on one real amd64 image: with no
 # network, authenticated /status and /providers each complete within five
@@ -11,8 +11,7 @@
 #   - cold cache (no provider file, fresh server): both endpoints answer 200
 #     in under five seconds; providers fall back to the bundled catalogue;
 #     harness facts carry installed/runnable state with auth unknown rather
-#     than failing, and the baked fallback reflects the variant (present on
-#     `slim`/`full`, absent on `core`/`browser`);
+#     than failing, and no target claims a baked fallback;
 #   - warm cache (a seeded provider file, restarted server): /providers keeps
 #     serving the seeded catalogue with a disk source marker;
 #   - concurrent polls (five of each endpoint at once) all answer 200 in
@@ -38,9 +37,9 @@ usage() {
   cat <<'USAGE'
 Usage: scripts/test-offline.sh [--variant NAME] [image]
 
-  --variant NAME   slim | full | core | browser
+  --variant NAME   core | browser
                    (default: inferred from the image tag; required for digest refs)
-  image            image tag or digest reference (default: t3code:slim)
+  image            image tag or digest reference (default: t3code:core)
 USAGE
 }
 
@@ -53,11 +52,11 @@ while [ $# -gt 0 ]; do
     *) IMAGE="$1"; shift ;;
   esac
 done
-[ -n "$IMAGE" ] || IMAGE="t3code:slim"
+[ -n "$IMAGE" ] || IMAGE="t3code:core"
 
 case "$VARIANT" in
-  ""|slim|full|core|browser) ;;
-  *) echo "test-offline.sh: variant must be slim, full, core, or browser" >&2; exit 2 ;;
+  ""|core|browser) ;;
+  *) echo "test-offline.sh: variant must be core or browser" >&2; exit 2 ;;
 esac
 
 if [ -z "$VARIANT" ]; then
@@ -66,9 +65,7 @@ if [ -z "$VARIANT" ]; then
     *@sha256:*) tag="" ;;
   esac
   case "$tag" in
-    slim|full|core|browser) VARIANT="$tag" ;;
-    *-slim) VARIANT="slim" ;;
-    *-full) VARIANT="full" ;;
+    core|browser) VARIANT="$tag" ;;
     *-core) VARIANT="core" ;;
     *-browser) VARIANT="browser" ;;
     *)
@@ -84,12 +81,6 @@ if [ -z "$VARIANT" ]; then
       ;;
   esac
 fi
-
-# Transitional images keep a baked harness executable as fallback; final images
-# ship the installer only. The expectation below is the variant's, not the
-# observed state's.
-HAS_BAKED_HARNESSES=1
-case "$VARIANT" in core|browser) HAS_BAKED_HARNESSES=0 ;; esac
 
 NAME="t3code-offline-$$"
 VOLUME="t3code-offline-home-$$"
@@ -208,13 +199,8 @@ has "cold /status reports harness freshness" '"harnessCache":' "$status_body"
 has "cold /status harness cache names its source" '"source":' "$status_body"
 has "cold /status keeps the degraded list" '"degraded":' "$status_body"
 for id in claude codex opencode grok cursor; do
-  if [ "$HAS_BAKED_HARNESSES" -eq 1 ]; then
-    is "cold $id still reports its baked fallback" "true" \
-      "$(field ".harnesses[] | select(.id == \"$id\") | .bakedFallback.present" "$status_body")"
-  else
-    is "cold $id reports no baked fallback in $VARIANT" "false" \
-      "$(field ".harnesses[] | select(.id == \"$id\") | .bakedFallback.present" "$status_body")"
-  fi
+  is "cold $id reports no baked fallback in $VARIANT" "false" \
+    "$(field ".harnesses[] | select(.id == \"$id\") | .bakedFallback.present" "$status_body")"
 done
 has "cold /status keeps local pairing inspection" '"pairings":' "$status_body"
 has "cold /status keeps local session inspection" '"sessions":' "$status_body"

@@ -4,12 +4,12 @@
 # Two modes, because the numbers must be reproducible both on a native build
 # runner and from a published artifact:
 #
-#   scripts/measure-image.sh slim full
+#   scripts/measure-image.sh core browser
 #     Measure locally built targets through the container runtime (default:
 #     docker). Builds a missing target first unless --no-build is given, and
 #     records compressed size, unpacked size, digest, and startup time.
 #
-#   scripts/measure-image.sh --registry ghcr.io/dizys/t3code-docker slim full
+#   scripts/measure-image.sh --registry ghcr.io/dizys/t3code-docker core browser
 #     Measure a pushed multi-arch reference through the registry API. Needs no
 #     container runtime, and records the compressed and uncompressed layer
 #     totals plus the provenance labels baked into the config. Startup time is
@@ -28,8 +28,8 @@ usage() {
   cat <<'USAGE'
 Usage: scripts/measure-image.sh [options] TARGET...
 
-  TARGET            local mode: slim | full (any target scripts/build.sh accepts)
-                    registry mode: image tag, e.g. slim | full | 0.4.5-slim
+  TARGET            local mode: core | browser (any target scripts/build.sh accepts)
+                    registry mode: image tag, e.g. core | browser | 0.5.0-core
 
 Options:
   --registry HOST/REPO   measure pushed tags through the registry API instead
@@ -47,9 +47,9 @@ Options:
   -h, --help             show this help
 
 Examples:
-  scripts/measure-image.sh slim full
-  scripts/measure-image.sh --no-startup --runtime podman slim
-  scripts/measure-image.sh --registry ghcr.io/dizys/t3code-docker --unpacked slim full
+  scripts/measure-image.sh core browser
+  scripts/measure-image.sh --no-startup --runtime podman core
+  scripts/measure-image.sh --registry ghcr.io/dizys/t3code-docker --unpacked core browser
 USAGE
 }
 

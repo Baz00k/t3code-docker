@@ -234,7 +234,7 @@ if command -v chromium >/dev/null 2>&1; then
     bad "headless render" "chromium could not render a page"
   fi
 else
-  warn chromium "not installed (slim image)"
+  warn chromium "not installed (this is the core image; use the browser target)"
 fi
 version_of chrome-devtools-mcp chrome-devtools-mcp --version
 version_of playwright-mcp playwright-mcp --version

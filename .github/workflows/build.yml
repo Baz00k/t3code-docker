@@ -14,6 +14,14 @@ on:
 env:
   REGISTRY: ghcr.io
   IMAGE: ${{ github.repository }}
+  # Published `v0.4.5` transitional baselines, pulled (compressed / unpacked).
+  # Release runs report the final targets against these so the product switch's
+  # size impact is visible without recomposing the old targets.
+  # See docs/toolchain/baseline.md.
+  BASELINE_SLIM_COMPRESSED: "1175874628"
+  BASELINE_SLIM_UNPACKED: "3156061184"
+  BASELINE_FULL_COMPRESSED: "2097056511"
+  BASELINE_FULL_UNPACKED: "5571555840"
 
 jobs:
   lint:
@@ -58,10 +66,10 @@ jobs:
   # amd64 is smoke-tested: arm64 members are built and digest-mapped, and the
   # plan accepts that they behave analogously (see docs/toolchain/ci-evidence.md).
   #
-  # On a release tag the digest that gets tagged is the digest that passed the
-  # smoke test, not a rebuild. Transitional `slim`/`full` push by digest here and
-  # `merge` stitches the tested digests into the release tags; `core`/`browser`
-  # stay local until TM-13 switches publication.
+  # On a release tag both final targets push by digest, and `merge` stitches the
+  # tested digests into the release tags. Nothing is rebuilt between test and
+  # publish. `latest` becomes `core`; the historical `slim`/`full` tags stop
+  # receiving updates and keep their existing artifacts.
   build:
     name: ${{ matrix.target }} (${{ matrix.platform }})
     runs-on: ${{ matrix.runner }}
@@ -73,7 +81,7 @@ jobs:
     strategy:
       fail-fast: false
       matrix:
-        target: [slim, full, core, browser]
+        target: [core, browser]
         platform: [amd64, arm64]
         include:
           - platform: amd64
@@ -83,10 +91,10 @@ jobs:
     steps:
       - uses: actions/checkout@v4
 
-      # The full and browser images are several GB; the default runner does not
-      # have room for them alongside the preinstalled toolchains.
+      # The browser image is several GB; the default runner does not have room
+      # for it alongside the preinstalled toolchains.
       - name: Reclaim disk
-        if: matrix.target == 'full' || matrix.target == 'browser'
+        if: matrix.target == 'browser'
         run: |
           sudo rm -rf /usr/share/dotnet /usr/local/lib/android /opt/ghc \
                       /usr/local/share/boost "$AGENT_TOOLSDIRECTORY"
@@ -99,7 +107,7 @@ jobs:
       - uses: docker/setup-buildx-action@v3
 
       - name: Log in to the registry
-        if: github.ref_type == 'tag' && (matrix.target == 'slim' || matrix.target == 'full')
+        if: github.ref_type == 'tag'
         uses: docker/login-action@v3
         with:
           registry: ${{ env.REGISTRY }}
@@ -117,12 +125,12 @@ jobs:
           context: .
           target: ${{ matrix.target }}
           platforms: linux/${{ matrix.platform }}
-          # Tag pushes of the transitional targets go straight to the registry
-          # by digest, so the smoke test below can pull the exact artifact that
-          # would be released. Everything else stays local.
-          load: ${{ !(github.ref_type == 'tag' && (matrix.target == 'slim' || matrix.target == 'full')) }}
-          outputs: ${{ (github.ref_type == 'tag' && (matrix.target == 'slim' || matrix.target == 'full')) && format('type=image,name={0}/{1},push-by-digest=true,name-canonical=true,push=true', env.REGISTRY, steps.image.outputs.slug) || '' }}
-          tags: ${{ !(github.ref_type == 'tag' && (matrix.target == 'slim' || matrix.target == 'full')) && format('t3code:{0}', matrix.target) || '' }}
+          # Tag pushes go straight to the registry by digest, so the smoke
+          # test and the E2E below pull the exact artifact that would be
+          # released. Everything else stays local.
+          load: ${{ github.ref_type != 'tag' }}
+          outputs: ${{ github.ref_type == 'tag' && format('type=image,name={0}/{1},push-by-digest=true,name-canonical=true,push=true', env.REGISTRY, steps.image.outputs.slug) || '' }}
+          tags: ${{ github.ref_type != 'tag' && format('t3code:{0}', matrix.target) || '' }}
           labels: ${{ steps.meta.outputs.labels }}
           # The tag on a release build, the branch otherwise; the setup page
           # shows it so a pull can be confirmed at a glance.
@@ -134,11 +142,11 @@ jobs:
 
       # buildx pushes an index when it attaches provenance, so the digest above
       # refers to the index. The platform manifest is its member, and that is
-      # the artifact the smoke test below and the promoted manifest must agree
-      # on.
+      # the artifact the smoke test, the E2E and the promoted manifest must
+      # agree on.
       - name: Resolve the platform digest
         id: platform
-        if: github.ref_type == 'tag' && (matrix.target == 'slim' || matrix.target == 'full')
+        if: github.ref_type == 'tag'
         env:
           INDEX_DIGEST: ${{ steps.build.outputs.digest }}
           ARCH: ${{ matrix.platform }}
@@ -156,23 +164,75 @@ jobs:
         if: matrix.platform == 'amd64'
         env:
           VARIANT: ${{ matrix.target }}
-          PUSHED_DIGEST: ${{ steps.build.outputs.digest }}
           PLATFORM_DIGEST: ${{ steps.platform.outputs.digest }}
-          PUSH_IMAGE: ${{ github.ref_type == 'tag' && (matrix.target == 'slim' || matrix.target == 'full') }}
         run: |
-          if [ "$PUSH_IMAGE" = "true" ]; then
+          if [ "${{ github.ref_type }}" = "tag" ]; then
             scripts/smoke-test.sh --variant "$VARIANT" \
               "${REGISTRY}/${{ steps.image.outputs.slug }}@${PLATFORM_DIGEST}"
           else
             scripts/smoke-test.sh --variant "$VARIANT" "t3code:${VARIANT}"
           fi
 
-      # The evidence artifact is written only after the smoke test above passed,
-      # and it names the exact platform digest that was tested. `merge` promotes
-      # the pushed indexes without rebuilding anything and asserts that their
-      # members are these digests.
+      # The release gate for the assembled product: install and launch all five
+      # managed harnesses through T3, survive recreation (including offline),
+      # prove project tools stay separate from image infrastructure, and on
+      # `browser` drive real pages through the managed MCP registration.
+      # Runs against the exact pushed digest on native amd64.
+      - name: Final-target E2E (native amd64, release only)
+        if: github.ref_type == 'tag' && matrix.platform == 'amd64'
+        env:
+          VARIANT: ${{ matrix.target }}
+          PLATFORM_DIGEST: ${{ steps.platform.outputs.digest }}
+        run: |
+          scripts/test-toolchain-e2e.sh --variant "$VARIANT" \
+            "${REGISTRY}/${{ steps.image.outputs.slug }}@${PLATFORM_DIGEST}"
+
+      # Measured from the pulled digest, so the size and startup timing belong
+      # to the exact artifact under test. The release summary compares both
+      # final targets against the published transitional baselines.
+      - name: Measure the tested artifact (native amd64, release only)
+        if: github.ref_type == 'tag' && matrix.platform == 'amd64'
+        env:
+          VARIANT: ${{ matrix.target }}
+          PLATFORM_DIGEST: ${{ steps.platform.outputs.digest }}
+        run: |
+          set -euo pipefail
+          mkdir -p /tmp/evidence
+          docker pull "${REGISTRY}/${{ steps.image.outputs.slug }}@${PLATFORM_DIGEST}" >/dev/null
+          docker tag "${REGISTRY}/${{ steps.image.outputs.slug }}@${PLATFORM_DIGEST}" "t3code:${VARIANT}"
+          scripts/measure-image.sh --no-build --json "$VARIANT" \
+            > "/tmp/evidence/measure-${VARIANT}.json"
+
+      # Reports size changes against the old `slim` (core) and `full` (browser)
+      # baselines; it does not gate the release on a threshold, but the numbers
+      # must be visible in the run that publishes them.
+      - name: Report size against the transitional baselines
+        if: github.ref_type == 'tag' && matrix.platform == 'amd64'
+        env:
+          VARIANT: ${{ matrix.target }}
+        run: |
+          set -euo pipefail
+          base_name=""; base_c=0; base_u=0
+          if [ "$VARIANT" = core ]; then
+            base_name="slim"; base_c="$BASELINE_SLIM_COMPRESSED"; base_u="$BASELINE_SLIM_UNPACKED"
+          else
+            base_name="full"; base_c="$BASELINE_FULL_COMPRESSED"; base_u="$BASELINE_FULL_UNPACKED"
+          fi
+          jq -r --arg base "$base_name" --argjson bc "$base_c" --argjson bu "$base_u" '
+            .[0] |
+            "### Size: `\(.target)`\n\n" +
+            "| Artifact | Compressed | Unpacked | Startup |\n| --- | ---: | ---: | ---: |\n" +
+            "| `\(.target)` (new) | \(.compressed_bytes) B | \(.unpacked_bytes) B | \(.startup_seconds) s |\n" +
+            "| `\($base)` (old baseline) | \($bc) B | \($bu) B | — |\n" +
+            "| Delta | \((.compressed_bytes - $bc) / $bc * 100 | . * 10 | round / 10)% | \((.unpacked_bytes - $bu) / $bu * 100 | . * 10 | round / 10)% | — |"' \
+            "/tmp/evidence/measure-${VARIANT}.json" >> "$GITHUB_STEP_SUMMARY"
+
+      # The evidence artifact is written only after the smoke test and E2E above
+      # passed, and it names the exact platform digest that was tested. `merge`
+      # promotes the pushed indexes without rebuilding anything and asserts
+      # that their members are these digests.
       - name: Record the tested digest
-        if: github.ref_type == 'tag' && (matrix.target == 'slim' || matrix.target == 'full')
+        if: github.ref_type == 'tag'
         env:
           VARIANT: ${{ matrix.target }}
           PLATFORM: linux/${{ matrix.platform }}
@@ -181,6 +241,8 @@ jobs:
           TESTED: ${{ matrix.platform == 'amd64' }}
         run: |
           mkdir -p /tmp/evidence
+          size="$(cat "/tmp/evidence/measure-${VARIANT}.json" 2>/dev/null || echo null)"
+          [ "$TESTED" = "true" ] && size="$(printf '%s' "$size" | jq -c '.[0] // null' 2>/dev/null || echo null)" || size=null
           jq -cn \
             --arg target "$VARIANT" --arg platform "$PLATFORM" \
             --arg digest "$PLATFORM_DIGEST" --arg indexDigest "$INDEX_DIGEST" \
@@ -189,13 +251,14 @@ jobs:
             --arg indexRef "${REGISTRY}/${{ steps.image.outputs.slug }}@${INDEX_DIGEST}" \
             --arg runUrl "${GITHUB_SERVER_URL}/${GITHUB_REPOSITORY}/actions/runs/${GITHUB_RUN_ID}" \
             --argjson tested "$TESTED" \
+            --argjson size "$size" \
             '{target:$target, platform:$platform, digest:$digest, indexDigest:$indexDigest,
-              ref:$ref, indexRef:$indexRef, tested:$tested,
+              ref:$ref, indexRef:$indexRef, tested:$tested, size:$size,
               sourceSha:$sourceSha, runUrl:$runUrl}' \
             > "/tmp/evidence/build-${VARIANT}-${{ matrix.platform }}.json"
 
       - uses: actions/upload-artifact@v4
-        if: github.ref_type == 'tag' && (matrix.target == 'slim' || matrix.target == 'full')
+        if: github.ref_type == 'tag'
         with:
           name: build-evidence-${{ matrix.target }}-${{ matrix.platform }}
           path: /tmp/evidence/*.json
@@ -205,8 +268,8 @@ jobs:
   # Promote the tested digests into the release tags. No image is rebuilt: the
   # manifest list is assembled from the digests the build jobs pushed, and
   # `verify-promoted-manifest.sh` asserts that each release tag maps exactly the
-  # digests the jobs recorded. Historical `slim`/`full`/`latest` tags keep their
-  # existing meaning until the TM-13 product switch.
+  # digests the jobs recorded. `core` becomes `latest`; historical `slim`/`full`
+  # tags keep their existing artifacts and stop receiving updates.
   merge:
     if: github.event_name == 'push' && github.ref_type == 'tag'
     runs-on: ubuntu-latest
@@ -217,7 +280,7 @@ jobs:
     strategy:
       fail-fast: false
       matrix:
-        target: [slim, full]
+        target: [core, browser]
     steps:
       - uses: actions/checkout@v4
 
@@ -243,18 +306,18 @@ jobs:
         uses: docker/metadata-action@v5
         with:
           images: ${{ env.REGISTRY }}/${{ steps.image.outputs.slug }}
-          # `flavor: suffix` would apply to every tag, turning the bare `slim`
-          # tag into `slim-slim`. Spell each one out instead.
-          #   full -> :full :latest :1.2.3 :1.2 :1.2.3-full :1.2-full
-          #   slim -> :slim :1.2.3-slim :1.2-slim
+          # `flavor: suffix` would apply to every tag, turning the bare `core`
+          # tag into `core-core`. Spell each one out instead.
+          #   core    -> :core :latest :1.2.3 :1.2 :1.2.3-core :1.2-core
+          #   browser -> :browser :1.2.3-browser :1.2-browser
           flavor: latest=false
           tags: |
             type=raw,value=${{ matrix.target }}
             type=semver,pattern={{version}},suffix=-${{ matrix.target }}
             type=semver,pattern={{major}}.{{minor}},suffix=-${{ matrix.target }}
-            type=raw,value=latest,enable=${{ matrix.target == 'full' }}
-            type=semver,pattern={{version}},enable=${{ matrix.target == 'full' }}
-            type=semver,pattern={{major}}.{{minor}},enable=${{ matrix.target == 'full' }}
+            type=raw,value=latest,enable=${{ matrix.target == 'core' }}
+            type=semver,pattern={{version}},enable=${{ matrix.target == 'core' }}
+            type=semver,pattern={{major}}.{{minor}},enable=${{ matrix.target == 'core' }}
 
       - name: Promote the tested digests
         env:
@@ -272,7 +335,8 @@ jobs:
               *) echo "unexpected platform '$platform' in $f" >&2; exit 1 ;;
             esac
             # Promote the pushed index (provenance included); assert that its
-            # platform members are the manifests the smoke test ran against.
+            # platform members are the manifests the smoke test and E2E ran
+            # against.
             refs+=("${REGISTRY}/${SLUG}@${index}")
             expects+=(--expect "${platform}=${digest}")
           done
