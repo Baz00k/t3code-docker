@@ -285,10 +285,16 @@ is "the next install heals the interrupted state" "true" "$(field '.ok' "$healed
 is "the healed harness is runnable" "true" "$(field '.harness.runnable' "$healed")"
 is "the healed harness is not failed" "false" "$(field '.harness.failed' "$healed")"
 
+# --- sign-in fact ------------------------------------------------------------
+# A runnable harness probes its credential file through its managed executable.
+section "Sign-in fact"
+CRED_FILE=/home/t3/.local/share/opencode/auth.json
+dex sh -c "mkdir -p /home/t3/.local/share/opencode && printf '%s' '{\"anthropic\":{\"type\":\"api\",\"key\":\"k\"}}' > $CRED_FILE"
+auth_out="$(driver authenticated opencode)"
+is "opencode is reported authenticated from its credential file" "true" "$(field '.authenticated' "$auth_out")"
+
 # --- credential-preserving uninstall -----------------------------------------
 section "Uninstall preserves credentials and reports no fallback"
-CRED_FILE=/home/t3/.local/share/opencode/auth.json
-dex sh -c "mkdir -p /home/t3/.local/share/opencode && printf '%s' '{\"anthropic\":{\"type\":\"api\",\"key\":\"test-key\"}}' > $CRED_FILE"
 uninstall_out="$(driver uninstall opencode)"
 is "uninstall succeeds" "true" "$(field '.ok' "$uninstall_out")"
 is "the harness is no longer configured" "false" "$(field '.harness.configured' "$uninstall_out")"
@@ -296,18 +302,15 @@ is "the harness is no longer installed" "false" "$(field '.harness.installed' "$
 is "the managed executable is gone" "null" "$(field '.harness.executable' "$uninstall_out")"
 is "no baked fallback remains" "false" "$(field '.harness.bakedFallback.present' "$uninstall_out")"
 is "the credential surface is reported" "true" "$(field '.harness.credentials.present' "$uninstall_out")"
-is "credentials were preserved" "test-key" \
+is "credentials were preserved" "k" \
   "$(dex sh -c "cat $CRED_FILE" | jq -r '.anthropic.key')"
+# With no executable to probe, the honest verdict is unknown, not signed in.
+uninstalled_auth="$(driver authenticated opencode)"
+is "an uninstalled harness reports auth unknown" "null" "$(field '.authenticated' "$uninstalled_auth")"
 is "no opencode request remains in mise" "0" \
   "$(mise_ls | jq '(.opencode // []) | length')"
 is "the managed opencode executable is removed" "absent" \
   "$(droot sh -c 'test -x /home/t3/.local/share/mise/installs/opencode/1.18.31/opencode && echo present || echo absent')"
-
-# --- sign-in fact ------------------------------------------------------------
-section "Sign-in fact"
-dex sh -c "printf '%s' '{\"anthropic\":{\"type\":\"api\",\"key\":\"k\"}}' > $CRED_FILE"
-auth_out="$(driver authenticated opencode)"
-is "opencode is reported authenticated from its credential file" "true" "$(field '.authenticated' "$auth_out")"
 
 # --- persistence across recreation -------------------------------------------
 section "Recreation with the same volume"
