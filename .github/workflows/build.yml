@@ -245,7 +245,9 @@ jobs:
         if: github.ref_type == 'tag'
         with:
           name: build-evidence-${{ matrix.target }}-${{ matrix.platform }}
-          path: /tmp/evidence/*.json
+          # The evidence contract is the build record; the measurement file
+          # feeds the run summary and its numbers are copied into the record.
+          path: /tmp/evidence/build-*.json
           if-no-files-found: error
           retention-days: 7
 
@@ -309,7 +311,9 @@ jobs:
         run: |
           set -euo pipefail
           refs=(); expects=(); amd64_tested=0; arm64=0
-          for f in /tmp/evidence/*.json; do
+          # Only the build records; the run's measurement JSON also lands in
+          # /tmp/evidence and is a differently shaped document.
+          for f in /tmp/evidence/build-*.json; do
             platform="$(jq -r .platform "$f")"
             digest="$(jq -r .digest "$f")"
             index="$(jq -r .indexDigest "$f")"
@@ -338,7 +342,7 @@ jobs:
             echo
             echo '| Platform | Member digest | Tested | Index digest |'
             echo '| --- | --- | --- | --- |'
-            jq -r '"| \(.platform) | `\(.digest)` | \(.tested) | `\(.indexDigest)` |"' /tmp/evidence/*.json
+            jq -r '"| \(.platform) | `\(.digest)` | \(.tested) | `\(.indexDigest)` |"' /tmp/evidence/build-*.json
             echo
             echo "Tags: $(printf "\`%s\` " "${tags[@]}")"
           } >> "$GITHUB_STEP_SUMMARY"
