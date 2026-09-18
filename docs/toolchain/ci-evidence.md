@@ -260,12 +260,13 @@ binary), the setup-pill injection, and re-verifying the provider seams audited
 in [`provider-audit.md`](./provider-audit.md). That is an infrastructure
 migration, not a pin refresh, and it is not part of TM-11: the pins are
 refreshed for the harnesses and MCP servers, T3 stays at 0.0.40, and rehearsals
-waive the freshness assertion until the migration lands. The issue handoff
-records this as a follow-up for the map.
+waive the freshness assertion until the migration lands. Tracked as
+[TM-16](https://github.com/Baz00k/t3code-docker/issues/18), which blocks TM-13's
+release path while the strict pin check is in place.
 
 ## Corrections Returned To Owners
 
-Wiring the full matrix in CI surfaced three defects that predate TM-11. They
+Wiring the full matrix in CI surfaced five defects that predate TM-11. They
 were fixed on the TM-11 branch because they block every candidate run, and are
 called out here so the originating work can review them:
 
@@ -274,10 +275,13 @@ called out here so the originating work can review them:
 | `test-runtime-matrix.sh` copied a `mktemp` (0600) `mise.toml` into the container; on a runner whose uid is not the container's `t3` uid, mise could not read it and every runtime check failed. | TM-10 | `chmod 644` before `docker cp`. |
 | The setup server kept serving an authenticated harness snapshot from before a credential write: storing a Codex key left the panel on "not signed in" until the 15s refresh window elapsed. | TM-08/TM-09 | An explicit credential write bumps a cache generation, waits out any refresh that began before it, and refreshes through the same bounded read before returning (`cache.mjs` `invalidate()`, `server.mjs` `refreshSignInState`); sign-in completion and child exits keep the manager-only verdict flush. Covered by three new unit tests, including the pre-write-refresh race. |
 | The console audit compared button tops across an action group that is designed to wrap on phone widths, flagging the intended second line on `full`. | TM-10 | The audit compares buttons that share a visual line for groups that opt into wrapping; the strict single-line check stays everywhere else. |
+| `measure-image.sh` reported 0 unpacked bytes when `docker save` stored uncompressed blobs: gunzip closed the pipe and tar counted a truncated extract. | TM-01 | Fall back to the size in the tar header when the blob is not gzip. |
+| `test-offline.sh` asserted the transitional baked harness fallback unconditionally, so the final targets could not run it. | TM-09 | The check takes `--variant` and asserts the fallback the variant actually ships. |
 
-All three reproduce on the pre-refresh pin set; none is a TM-11 regression.
+All five reproduce on the pre-refresh pin set; none is a TM-11 regression.
 `smoke-test.sh`'s "a stored key flips the panel without waiting for a cache"
-and "the console has no layout defects" are the assertions that caught them.
+and "the console has no layout defects", `test-runtime-matrix.sh`'s install
+step, and `measure-image.sh`'s unpacked column are what caught them.
 
 ## Unavailable Checks
 
