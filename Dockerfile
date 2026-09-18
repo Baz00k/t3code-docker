@@ -2,19 +2,15 @@
 
 # T3 Code, packaged as a headless server.
 #
-# Four targets (two transitional, two final):
-#   slim    - TRANSITIONAL. T3 Code + baked agent harnesses + git/python.
-#             Enough to drive a repo. Historical artifacts remain, but the tag
-#             stops receiving updates after the product switch.
-#   full    - TRANSITIONAL. slim + baked Go/Rust/C++/Bun/Deno toolchains,
-#             ffmpeg, and a headless Chromium with browser-automation MCP
-#             servers. The current default.
-#   core    - FINAL. Base + full non-browser OS packages, image infrastructure,
-#             mise, and the harness installer. No baked harness executables, no
-#             baked language runtimes (Go/Rust/Bun/Deno/uv via mise), no browser.
-#   browser - FINAL. core + Chromium, fonts, and both MCP servers.
+# Two final targets:
+#   core    - FINAL DEFAULT (`latest`). Base + full non-browser OS packages,
+#             image infrastructure, mise, and the harness installer. No baked
+#             harness executables, no baked language runtimes (Go/Rust/Bun/Deno/
+#             uv and project language versions install through mise), no browser.
+#   browser - core + Chromium, fonts, and both browser-automation MCP servers.
 #
-# Build:  docker build --target browser -t t3code:browser .
+# Build:  docker build --target core -t t3code:core .
+#         docker build --target browser -t t3code:browser .
 # See README.md for the runtime contract and docs/toolchain/image-contract.md
 # for the authoritative target profiles.
 
@@ -133,11 +129,11 @@ RUN set -eux; \
     groupadd -g "$T3_GID" t3; \
     useradd -m -u "$T3_UID" -g "$T3_GID" -s /bin/bash t3
 
-# Mutable npm location. The baked harnesses and the browser MCP servers live
-# here so T3 Code's own "update provider" button and plain `npm i -g` keep
-# working at runtime. This is deliberately not T3 Code's own prefix: the server
-# is image infrastructure (T3_INFRA_PREFIX below) and a writable prefix it
-# shared with user packages could be used to rewrite the server itself.
+# Mutable npm location. User globals (`npm i -g`) and the browser MCP servers
+# live here. This is deliberately not T3 Code's own prefix: the server is image
+# infrastructure (T3_INFRA_PREFIX below), and a writable prefix it shared with
+# user packages could be used to rewrite the server itself. Agent harnesses do
+# not live here: they install through mise into the persistent home.
 ENV PATH=/opt/npm-global/bin:$PATH
 RUN mkdir -p /opt/npm-global && chown -R t3:t3 /opt/npm-global
 
@@ -198,241 +194,14 @@ RUN set -eux; \
     chown -R t3:t3 /home/t3/.config /home/t3/.local /home/t3/.cache
 
 # ---------------------------------------------------------------------------
-# slim - T3 Code and the harnesses
-# ---------------------------------------------------------------------------
-FROM base AS slim
-
-# Pinned so a rebuild is reproducible; `scripts/bump-versions.sh` refreshes them
-# against the registries, and CI opens a PR when one falls behind. Any of these
-# also accepts `latest` as a build arg when you want the newest at build time.
-ARG T3_VERSION=0.0.40
-ARG CLAUDE_CODE_VERSION=2.1.274
-ARG CODEX_VERSION=0.154.0
-ARG OPENCODE_VERSION=1.18.31
-ARG GROK_VERSION=1.0.34
-
-# T3 Code is image infrastructure. It installs into its own root-owned prefix
-# and is launched only through absolute paths - docker/bin/t3-admin passes the
-# entry module to the image Node - so nothing under a project, a mise shim, or
-# a user npm prefix can change which runtime the server runs.
-ENV T3_INFRA_PREFIX=/opt/t3 \
-    T3_INFRA_NODE=/usr/local/bin/node \
-    T3_INFRA_LAUNCHER=/usr/local/bin/t3-admin
-
-# node-pty has no Linux prebuilds and compiles here; build-essential and
-# python3 (installed above) are what make that work.
-RUN set -eux; \
-    mkdir -p "$T3_INFRA_PREFIX"; \
-    npm install -g --no-audit --no-fund --prefix "$T3_INFRA_PREFIX" \
-        "t3@${T3_VERSION}"; \
-    npm cache clean --force; \
-    # Source maps are dead weight here (~140 MB across the image).
-    find "$T3_INFRA_PREFIX" -type f -name '*.map' -delete; \
-    # Root-owned and not group/other writable: the t3 user runs the server and
-    # must never be able to modify it.
-    chown -R root:root "$T3_INFRA_PREFIX"; \
-    chmod -R go-w "$T3_INFRA_PREFIX"
-
-# Harnesses stay in the mutable prefix, exactly as before. T3 Code's "update
-# provider" button installs into the prefix it discovers from each harness's
-# real path, so baked harnesses keep updating until the product switch.
-RUN set -eux; \
-    npm install -g --no-audit --no-fund --prefix /opt/npm-global \
-        "@anthropic-ai/claude-code@${CLAUDE_CODE_VERSION}" \
-        "@openai/codex@${CODEX_VERSION}" \
-        "opencode-ai@${OPENCODE_VERSION}" \
-        "@xai-official/grok@${GROK_VERSION}"; \
-    npm cache clean --force; \
-    # Source maps and other platforms' prebuilt binaries are dead weight here
-    # (~140 MB); the harnesses only ever load the Linux ones.
-    find /opt/npm-global -type f -name '*.map' -delete; \
-    find /opt/npm-global -type d \( -name 'win32-*' -o -name 'darwin-*' \) \
-         -prune -exec rm -rf {} +; \
-    chown -R t3:t3 /opt/npm-global
-
-# Cursor ships no npm package; its installer writes into $HOME/.local/bin, so
-# give it a home of its own rather than letting it land in /root.
-ARG INSTALL_CURSOR=true
-ENV CURSOR_HOME=/opt/cursor
-ENV PATH=/opt/cursor/.local/bin:$PATH
-# Downloaded to a file rather than piped: `curl ... | bash` reports bash's exit
-# status, so a failed download installs nothing and still succeeds. The test at
-# the end is the real guard - every other toolchain here proves itself by
-# running --version, and this one silently did not.
-RUN set -eux; \
-    if [ "$INSTALL_CURSOR" = "true" ]; then \
-      mkdir -p "$CURSOR_HOME"; \
-      curl -fsSL https://cursor.com/install -o /tmp/cursor-install.sh; \
-      HOME="$CURSOR_HOME" bash /tmp/cursor-install.sh; \
-      rm -f /tmp/cursor-install.sh; \
-      test -x "$CURSOR_HOME/.local/bin/cursor-agent"; \
-      chown -R t3:t3 "$CURSOR_HOME"; \
-    fi
-
-COPY docker/entrypoint.sh /usr/local/bin/entrypoint.sh
-COPY docker/bin/ /usr/local/bin/
-# Plain ESM modules shared by the setup service, the entrypoint and the shell
-# helpers: the harness manager owns install/resolve, and the provider
-# integration turns its selection into T3's per-provider `binaryPath`.
-COPY docker/harness/ /opt/t3-harness/
-COPY docker/provider-integration/ /opt/t3-provider/
-COPY docker/setup/ /opt/t3-setup/
-COPY examples/ /opt/examples/
-# T3 Code's client has no link to the setup console, so a fresh install that
-# lands on the pairing screen has nowhere to go. The pill is injected into the
-# static shell - it probes for the console and hides itself when absent - and
-# patch.mjs fails the build if upstream moves the layout it relies on.
-COPY docker/t3-client/ /usr/local/share/t3-client/
-RUN "$T3_INFRA_NODE" /usr/local/share/t3-client/patch.mjs
-# `t3` is the same immutable launcher under its user-facing name. /usr/local/bin
-# precedes the npm prefixes on PATH, so it always wins over a project shim.
-RUN chmod +x /usr/local/bin/entrypoint.sh /usr/local/bin/t3-* \
-    && ln -sfn t3-admin /usr/local/bin/t3
-
-ENV T3CODE_HOME=/home/t3/.t3 \
-    T3CODE_HOST=0.0.0.0 \
-    T3CODE_PORT=3773 \
-    T3_WORKSPACE=/workspace \
-    T3_AUTO_ADD_PROJECTS=1 \
-    T3_PRINT_PAIRING_ON_START=0 \
-    T3_SETUP_ENABLED=1 \
-    T3_SETUP_PORT=3774 \
-    T3_SETUP_BASE_PATH= \
-    PUID=1000 \
-    PGID=1000
-
-RUN mkdir -p /workspace /home/t3/.t3 && chown -R t3:t3 /workspace /home/t3
-
-VOLUME ["/home/t3", "/workspace"]
-WORKDIR /workspace
-EXPOSE 3773 3774
-
-HEALTHCHECK --interval=30s --timeout=5s --start-period=90s --retries=3 \
-    CMD curl -fsS --max-time 4 "http://127.0.0.1:${T3CODE_PORT}/.well-known/t3/environment" >/dev/null || exit 1
-
-# Stamped last so a version change reuses every layer above it. IMAGE_VERSION is
-# the release tag in CI and "dev" for a local build; the setup page shows both so
-# you can tell at a glance which image is actually running.
-ARG IMAGE_VERSION=dev
-ARG IMAGE_VARIANT=slim
-ENV T3_IMAGE_VERSION=${IMAGE_VERSION} \
-    T3_IMAGE_VARIANT=${IMAGE_VARIANT}
-LABEL org.opencontainers.image.version="${IMAGE_VERSION}"
-
-ENTRYPOINT ["/usr/bin/tini", "--", "/usr/local/bin/entrypoint.sh"]
-CMD ["t3-serve"]
-
-# ---------------------------------------------------------------------------
-# full - language toolchains, media tools, and a headless browser
-# ---------------------------------------------------------------------------
-FROM slim AS full
-
-USER root
-
-RUN set -eux; \
-    apt-get -o Acquire::Retries=8 update; \
-    apt-get install -y --no-install-recommends \
-        clang lld cmake pkg-config gdb \
-        ffmpeg imagemagick \
-        postgresql-client redis-tools \
-        chromium \
-        fonts-liberation fonts-dejavu-core fonts-noto-core \
-        fonts-noto-color-emoji fonts-noto-cjk; \
-    rm -rf /var/lib/apt/lists/*
-
-# Go - Debian's golang-go trails upstream, so take the official tarball.
-# GOPATH (and its bin directory) is user state, so it is set only for the t3
-# user by /etc/profile.d/t3-user-env.sh - never image-wide. Root's `go install`
-# then lands in /root/go rather than writing into the user's home.
-ARG GO_VERSION=1.27.1
-ENV GOROOT=/usr/local/go
-ENV PATH=/usr/local/go/bin:$PATH
-RUN set -eux; \
-    arch="$(dpkg --print-architecture)"; \
-    case "$arch" in \
-      amd64) goarch=amd64 ;; \
-      arm64) goarch=arm64 ;; \
-      *) echo "unsupported architecture: $arch" >&2; exit 1 ;; \
-    esac; \
-    curl -fsSL "https://go.dev/dl/go${GO_VERSION}.linux-${goarch}.tar.gz" -o /tmp/go.tgz; \
-    tar -C /usr/local -xzf /tmp/go.tgz; \
-    rm /tmp/go.tgz; \
-    go version
-
-# Rust
-ARG RUST_VERSION=stable
-ENV RUSTUP_HOME=/usr/local/rustup \
-    CARGO_HOME=/usr/local/cargo
-ENV PATH=/usr/local/cargo/bin:$PATH
-RUN set -eux; \
-    curl -fsSL https://sh.rustup.rs | \
-      sh -s -- -y --no-modify-path --profile minimal \
-        --default-toolchain "$RUST_VERSION" \
-        --component clippy --component rustfmt; \
-    chmod -R a+w "$RUSTUP_HOME" "$CARGO_HOME"; \
-    rustc --version
-
-# Bun and Deno
-ENV BUN_INSTALL=/usr/local/bun
-ENV DENO_INSTALL=/usr/local/deno
-ENV PATH=/usr/local/bun/bin:/usr/local/deno/bin:$PATH
-RUN set -eux; \
-    curl -fsSL https://bun.sh/install | bash; \
-    curl -fsSL https://deno.land/install.sh | sh -s -- --yes; \
-    bun --version; \
-    deno --version
-
-# uv, for Python projects that expect it
-RUN set -eux; \
-    curl -fsSL https://astral.sh/uv/install.sh | \
-      env UV_INSTALL_DIR=/usr/local/bin INSTALLER_NO_MODIFY_PATH=1 sh; \
-    uv --version
-
-# Browser automation over MCP. T3 Code's own preview tools are hosted by the
-# web/desktop client, so a phone-only setup has no eyes without this.
-ARG CHROME_DEVTOOLS_MCP_VERSION=1.9.0
-ARG PLAYWRIGHT_MCP_VERSION=0.0.81
-ENV CHROME_PATH=/usr/bin/chromium \
-    CHROME_BIN=/usr/bin/chromium \
-    PUPPETEER_SKIP_DOWNLOAD=1 \
-    PUPPETEER_EXECUTABLE_PATH=/usr/bin/chromium \
-    PLAYWRIGHT_SKIP_BROWSER_DOWNLOAD=1 \
-    PLAYWRIGHT_CHROMIUM_EXECUTABLE_PATH=/usr/bin/chromium
-RUN set -eux; \
-    npm install -g --no-audit --no-fund --prefix /opt/npm-global \
-        "chrome-devtools-mcp@${CHROME_DEVTOOLS_MCP_VERSION}" \
-        "@playwright/mcp@${PLAYWRIGHT_MCP_VERSION}"; \
-    npm cache clean --force; \
-    chown -R t3:t3 /opt/npm-global
-
-RUN mkdir -p /home/t3/go && chown -R t3:t3 /home/t3
-
-# Stamped last so a version change reuses every layer above it. IMAGE_VERSION is
-# the release tag in CI and "dev" for a local build; the setup page shows both so
-# you can tell at a glance which image is actually running.
-ARG IMAGE_VERSION=dev
-ARG IMAGE_VARIANT=full
-ENV T3_IMAGE_VERSION=${IMAGE_VERSION} \
-    T3_IMAGE_VARIANT=${IMAGE_VARIANT}
-LABEL org.opencontainers.image.version="${IMAGE_VERSION}"
-
-# ---------------------------------------------------------------------------
-# core - the final default: base + full non-browser OS packages, T3 infra,
+# core - the default: base + full non-browser OS packages, T3 infrastructure,
 # mise (from base), and the harness installer. No baked harness executables,
 # no baked language runtimes, no browser.
-#
-# Transitional slim/full are preserved above unchanged. core duplicates slim's
-# T3/entrypoint wiring (minus baked harnesses) and full's non-browser apt set
-# so the old targets stay byte-identical in behavior while the new chain can
-# evolve independently. TM-13 removes slim/full and deduplicates.
 # ---------------------------------------------------------------------------
 FROM base AS core
 
-USER root
-
-# The non-browser union: everything full installs via apt except Chromium,
-# fonts, and (implicitly) the baked toolchains below it. Keep this list in
-# sync with full's non-browser subset; browser-only packages live in the
+# The non-browser union: everything the old full target installed via apt except
+# Chromium, fonts, and the baked toolchains. Browser-only packages live in the
 # browser stage.
 RUN set -eux; \
     apt-get -o Acquire::Retries=8 update; \
@@ -442,14 +211,16 @@ RUN set -eux; \
         postgresql-client redis-tools; \
     rm -rf /var/lib/apt/lists/*
 
-# Pinned so a rebuild is reproducible; `scripts/bump-versions.sh` refreshes
-# every `ARG T3_VERSION=` line in this file, so slim and core stay in sync.
-# Baked harness pins (CLAUDE/CODEX/OPENCODE/GROK) intentionally do not appear
-# here: core ships the installer, never the executables.
+# Pinned so a rebuild is reproducible; `scripts/bump-versions.sh` refreshes it
+# against the registry. The agent harnesses are not baked and therefore carry
+# no pins here: the harness installer resolves and records an exact version on
+# explicit install.
 ARG T3_VERSION=0.0.40
 
-# T3 Code is image infrastructure. Identical to slim: root-owned prefix,
-# launched only through absolute paths.
+# T3 Code is image infrastructure. It installs into its own root-owned prefix
+# and is launched only through absolute paths - docker/bin/t3-admin passes the
+# entry module to the image Node - so nothing under a project, a mise shim, or
+# a user npm prefix can change which runtime the server runs.
 ENV T3_INFRA_PREFIX=/opt/t3 \
     T3_INFRA_NODE=/usr/local/bin/node \
     T3_INFRA_LAUNCHER=/usr/local/bin/t3-admin
@@ -468,7 +239,7 @@ RUN set -eux; \
     chown -R root:root "$T3_INFRA_PREFIX"; \
     chmod -R go-w "$T3_INFRA_PREFIX"
 
-# No baked harnesses, no Cursor installer. The harness installer (manager +
+# No baked harnesses and no Cursor installer. The harness installer (manager +
 # provider integration + t3-harness CLI) arrives with the COPYs below and
 # installs mise-managed executables into the persistent home at runtime.
 
@@ -531,6 +302,10 @@ CMD ["t3-serve"]
 # ---------------------------------------------------------------------------
 FROM core AS browser
 
+# Browser automation over MCP. T3 Code's own preview tools are hosted by the
+# web/desktop client, so a phone-only setup has no eyes without this.
+ARG CHROME_DEVTOOLS_MCP_VERSION=1.9.0
+ARG PLAYWRIGHT_MCP_VERSION=0.0.81
 USER root
 
 RUN set -eux; \
@@ -541,12 +316,6 @@ RUN set -eux; \
         fonts-noto-color-emoji fonts-noto-cjk; \
     rm -rf /var/lib/apt/lists/*
 
-# Browser automation over MCP. Identical to full: T3 Code's own preview tools
-# are hosted by the web/desktop client, so a phone-only setup has no eyes
-# without this. `scripts/bump-versions.sh` keeps both full and browser pins in
-# sync.
-ARG CHROME_DEVTOOLS_MCP_VERSION=1.9.0
-ARG PLAYWRIGHT_MCP_VERSION=0.0.81
 ENV CHROME_PATH=/usr/bin/chromium \
     CHROME_BIN=/usr/bin/chromium \
     PUPPETEER_SKIP_DOWNLOAD=1 \

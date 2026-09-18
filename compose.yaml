@@ -2,10 +2,10 @@ name: t3code
 
 services:
   t3code:
-    image: ${T3_IMAGE:-t3code:full}
+    image: ${T3_IMAGE:-t3code:core}
     build:
       context: .
-      target: ${T3_BUILD_TARGET:-full}
+      target: ${T3_BUILD_TARGET:-core}
     container_name: t3code
     restart: unless-stopped
     hostname: ${T3_HOSTNAME:-t3code}

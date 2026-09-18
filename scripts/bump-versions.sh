@@ -22,12 +22,11 @@ drift=0
 changed=0
 
 # ARG name : npm package. The Dockerfile holds each as `ARG <name>=<version>`.
+# Agent harnesses are deliberately absent: they are installed at runtime
+# through mise, which resolves and records an exact version on explicit install
+# rather than baking one into the image.
 PINS="
 T3_VERSION:t3
-CLAUDE_CODE_VERSION:@anthropic-ai/claude-code
-CODEX_VERSION:@openai/codex
-OPENCODE_VERSION:opencode-ai
-GROK_VERSION:@xai-official/grok
 CHROME_DEVTOOLS_MCP_VERSION:chrome-devtools-mcp
 PLAYWRIGHT_MCP_VERSION:@playwright/mcp
 "
