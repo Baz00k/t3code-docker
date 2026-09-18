@@ -213,20 +213,32 @@ scripts/verify-promoted-manifest.sh --platforms linux/amd64 ghcr.io/you/t3code:c
 
 ## Current Evidence
 
-Final-target rehearsal, 2026-09-18, source `REPLACE_SHA`
-(run [REPLACE_RUN](https://github.com/Baz00k/t3code-docker/actions/runs/REPLACE)):
+Final-target rehearsal, 2026-09-18, source
+`d371bf6ade0f1f8b45c8e4d94bca82859701462e`
+(run [35321725906](https://github.com/Baz00k/t3code-docker/actions/runs/35321725906)):
+`core` and `browser` built for amd64 and arm64, both native amd64 test jobs
+passed every capability (including the harness lifecycle checks and the E2E),
+and both candidate manifests were promoted from the tested digests and
+member-verified inside the run. `scripts/verify-promoted-manifest.sh` was
+re-run independently from a checkout against the same tags and passed.
+Candidate tags get overwritten by later rehearsals; the digests below are the
+record.
 
 | Target | amd64 member (tested, E2E) | arm64 member (built) | Promoted candidate index digest |
 | --- | --- | --- | --- |
-| `core` | REPLACE | REPLACE | REPLACE |
-| `browser` | REPLACE | REPLACE | REPLACE |
+| `core` | `sha256:25671a93dce56f1f911efc760919ad77d112a62dc5f49ca4ad97825606bd8d72` | `sha256:91f55d912a22f1433500e17c9657aaf223d73ca4ff507338ec678825a0ad8cb2` | `sha256:5f2142b7ea97d42f11aae3206088016d2eb4f918f29d2f126fbc989ac2480e60` |
+| `browser` | `sha256:681f27401c4040570ce5b88f75d853f8b6c1d2fbe2e587e1e64a816715ea9c1f` | `sha256:e718b2bb6067ec2014b59441b8ca91c26f3309614afc79f742f27587b65eb088` | `sha256:0a2d6f05e84555902dd9e2eae0f416fcb86dffbbed3dd60152b8a6397c08969f` |
 
 Measured from the pulled amd64 digests (startup is the first healthy response):
 
 | Target | Compressed | Unpacked | Startup | Checks |
 | --- | ---: | ---: | ---: | --- |
-| `core` | REPLACE | REPLACE | REPLACE | infrastructure, mise, ownership, harness, offline, runtime, inventory, smoke, measure, e2e |
-| `browser` | REPLACE | REPLACE | REPLACE | infrastructure, mise, ownership, harness, offline, runtime, inventory, smoke, measure, e2e |
+| `core` | 0.69 GiB (745,217,028 B) | 2.03 GiB (2,179,749,376 B) | 3.66 s | infrastructure, mise, ownership, harness, offline, runtime, inventory, smoke, measure, e2e |
+| `browser` | 0.97 GiB (1,043,181,614 B) | 2.63 GiB (2,825,801,216 B) | 3.65 s | infrastructure, mise, ownership, harness, offline, runtime, inventory, smoke, measure, e2e |
+
+Both records are `tested: true` with `pinFreshness: "waived"` (TM-16). The
+local dry runs at the same source passed 147/0 checks on `core` and 156/0 on
+`browser`.
 
 Historical transitional rehearsal (TM-11), 2026-09-17, source `2fec568`
 (run [35256458619](https://github.com/Baz00k/t3code-docker/actions/runs/35256458619)):

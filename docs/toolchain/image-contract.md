@@ -141,16 +141,18 @@ scripts/test-provider-integration.sh t3code:core t3code:browser
 
 ## Size evidence
 
-Measured 2026-09-18 on native amd64 via `scripts/measure-image.sh`
-(compressed = gzipped `docker save`, unpacked = sum of uncompressed layers,
+Measured 2026-09-18 on native amd64 via `scripts/measure-image.sh` during the
+TM-13 candidate rehearsal (source `d371bf6`, run
+[35321725906](https://github.com/Baz00k/t3code-docker/actions/runs/35321725906);
+compressed = gzipped `docker save`, unpacked = sum of uncompressed layers,
 startup = `docker run` to first `/.well-known/t3/environment`):
 
-| Target | Compressed | Unpacked | Startup | Digest (local, amd64) |
+| Target | Compressed | Unpacked | Startup | Digest (native amd64, from the rehearsal) |
 | --- | ---: | ---: | ---: | --- |
 | `slim` (historical baseline, published `v0.4.5`) | 1.10 GiB | 2.94 GiB | ~3.2 s | — (see `baseline.md`) |
 | `full` (historical baseline, published `v0.4.5`) | 1.95 GiB | 5.19 GiB | ~3.2 s | — |
-| `core` | 755,962,110 B (0.70 GiB) | 2,179,746,816 B (2.03 GiB) | 3.49 s | `t3code@sha256:e85f7d7d1986e7bbeeed9c68b7eba011a6b63674ea60df9b88b31c2e868ccd82` |
-| `browser` | 1,057,125,558 B (0.98 GiB) | 2,825,798,144 B (2.63 GiB) | 3.26 s | `t3code@sha256:554b5b3dc344bf37f578019281d038d0e6fec83baf88ff1b7311119d3029f969` |
+| `core` | 0.69 GiB (745,217,028 B) | 2.03 GiB (2,179,749,376 B) | 3.66 s | `sha256:25671a93dce56f1f911efc760919ad77d112a62dc5f49ca4ad97825606bd8d72` |
+| `browser` | 0.97 GiB (1,043,181,614 B) | 2.63 GiB (2,825,801,216 B) | 3.65 s | `sha256:681f27401c4040570ce5b88f75d853f8b6c1d2fbe2e587e1e64a816715ea9c1f` |
 
 `core` is ~36% smaller compressed than the historical `slim` while carrying
 the non-browser union; `browser` is ~50% smaller compressed than the historical

@@ -121,7 +121,7 @@ docker compose exec -it t3code t3-login claude   # if you prefer a shell to the 
 | clang/CMake/GDB, ffmpeg, ImageMagick, psql, redis-cli | ✅ | ✅ |
 | Headless Chromium + browser MCP servers | — | ✅ |
 | cloudflared, for publishing a port | ✅ | ✅ |
-| Size on disk (pulled) | ~2.2 GB (~0.8 GB) | ~2.8 GB (~1.1 GB) |
+| Size on disk (pulled) | ~2.2 GB (~0.7 GB) | ~2.8 GB (~1.0 GB) |
 
 Neither image contains credentials, model access, or agent CLIs. You install the
 harnesses you use and sign them in yourself; they live on the `/home/t3` volume,
