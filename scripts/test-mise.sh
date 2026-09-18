@@ -157,7 +157,7 @@ is "bare docker exec still reads the system allowlist" \
 
 # The server itself must carry the user environment, because the terminals T3
 # opens are its children.
-pid="$(find_pid '*t3/dist/bin.mjs*serve*' || true)"
+pid="$(find_pid '*/opt/t3/t3*serve*' || true)"
 if [ -n "$pid" ]; then
   # gosu marks the dropped server non-dumpable, so only its own uid can read
   # the environment that the entrypoint handed down.

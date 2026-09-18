@@ -14,31 +14,30 @@ The canonical product contract is
 
 | Field | Value |
 | --- | --- |
-| Package | `t3` |
-| Version | `0.0.40` (`Dockerfile` `T3_VERSION`) |
-| Tarball | `https://registry.npmjs.org/t3/-/t3-0.0.40.tgz` |
-| Integrity | `sha512-lvyH1fexahy7lVXNNWP9FUE/IRlYFKEt5DksoscftVY0VBDQ3LBVrKbyYd5iiHWXr1Qun3Fcbf+kXsIP+75wjg==` |
-| shasum | `544a26c9f9ee6ce3c9c9a339f23702437b220b3b` |
-| Engines | `node: ^22.16 || ^23.11 || >=24.10` |
-| Entry module | `dist/bin.mjs` (package `bin.t3`) |
+| Package | `@t3code/t3-linux-{x64,arm64}` |
+| Version | `0.0.42` (`Dockerfile` `T3_VERSION`) |
+| amd64 tarball | `https://registry.npmjs.org/@t3code/t3-linux-x64/-/t3-linux-x64-0.0.42.tgz` |
+| amd64 integrity | `sha512-iRdhsW7qoQnTW+cChqMmuZwfakz90z5tpi3wA/Jg4AwljXF07o64Rhkf26TyMy0V3BWu5AAHTNFhK3znTMm1uA==` |
+| amd64 shasum | `e12c2ec663644a9d3c5e603e359127fce4359368` |
+| Source tag | `v0.0.42` (`719a76ca1dbf5490f1aa33ffb9966301e02be9a9`) |
+| Entry | native `t3` executable |
 
-The bundle is not minified past recognition: it ships `dist/bin.mjs.map` with
-full `sourcesContent`, so the audit reads the original TypeScript rather than
-inferring behavior from the bundle. That is the reproducible evidence base for
-every claim below.
+The self-contained executable has no source map. The audit reads the matching
+tagged TypeScript source and ties it to the platform package's exact version;
+live image tests then prove those seams through the released binary.
 
 ### Immutable T3 infrastructure
 
-- **Entry module:** `dist/bin.mjs`. TM-03 installs it into the root-owned
-  immutable prefix at `/opt/t3/lib/node_modules/t3/dist/bin.mjs`; it is no
-  longer part of the mutable `/opt/npm-global` prefix. See
+- **Entry:** `/opt/t3/t3`. TM-16 installs the architecture-specific platform
+  package into the root-owned immutable prefix; it is not part of the mutable
+  `/opt/npm-global` prefix. See
   [`infrastructure.md`](./infrastructure.md).
-- **Runtime:** the loaded Node must satisfy the engines range above. The image
-  Node is what T3 and setup must run under; nothing under a project or mise
-  toolchain may shadow it.
+- **Runtime:** T3 is a dynamically linked native executable. Setup and the
+  repository's JavaScript helpers continue to use the absolute image Node.
 - **CLI surface** (from `src/bin.ts` `withSubcommands`): `start`, `serve`, `app`,
-  `pair`, `auth`, `project`, `service`, `__service-preflight`, `theme`, `triage`,
-  `connect`. There is no provider install/update subcommand: provider
+  `pair`, `auth`, `project`, `service`, `update`, `uninstall`,
+  `__service-preflight`, `theme`, `triage`, `connect`. There is no provider
+  install/update subcommand: provider
   maintenance is a server-side action only.
 
 ### Administrative call sites in this repository
@@ -56,15 +55,16 @@ now goes through the immutable launcher (`/usr/local/bin/t3-admin`, also
 | `docker/bin/t3-login` | `"$T3_INFRA_LAUNCHER" connect` |
 | `docker/bin/t3-doctor` | `"$T3_INFRA_LAUNCHER" --version` |
 | `docker/setup/server.mjs` | `run(T3_LAUNCHER, args, ...)` |
-| `scripts/smoke-test.sh` | bundle discovery from `T3_INFRA_PREFIX`, no longer `/opt/npm-global` |
-| `Dockerfile` | `npm install -g --prefix /opt/t3 t3@${T3_VERSION}`, root-owned and `go-w` |
+| `scripts/smoke-test.sh` | platform-binary discovery from `T3_INFRA_PREFIX`, no longer `/opt/npm-global` |
+| `Dockerfile` | architecture-specific `@t3code/t3-linux-*` package copied to `/opt/t3`, root-owned and `go-w` |
 
 Details, including the launcher interface and the mutable user npm prefix, are in
 [`infrastructure.md`](./infrastructure.md).
 
 ## Provider Matrix
 
-Extracted from `t3@0.0.40` by `scripts/audit-t3-providers.mjs --expect-version 0.0.40`:
+Extracted from the `v0.0.42` source tag and platform package by
+`scripts/audit-t3-providers.mjs --expect-version 0.0.42`:
 
 | Provider | T3 driver kind | Settings default `binaryPath` | Enabled by default | Probe | Launch | Minimum version | Updater |
 | --- | --- | --- | --- | --- | --- | --- | --- |
@@ -73,6 +73,20 @@ Extracted from `t3@0.0.40` by `scripts/audit-t3-providers.mjs --expect-version 0
 | OpenCode | `opencode` | `opencode` | no (opt-in) | `opencode --version` + `opencode serve` inventory | `opencode serve` (SDK) | `1.14.19` | package-managed `opencode-ai` (`opencode upgrade` only for the native layout) |
 | Grok | `grok` | `grok` | no (opt-in) | `grok --version` + `grok models` | `grok ... acp` (ACP) | none | manual-only |
 | Cursor | `cursor` | `cursor-agent` | no (opt-in) | `cursor-agent about --format json` | `cursor-agent ... acp` (ACP) | none (model-picker needs CLI date `>= 2026-04-08`) | self-updating (`cursor-agent update`) |
+
+### Delta from 0.0.40
+
+The provider contract did not change in 0.0.42: all five driver kinds,
+`binaryPath` defaults, probes, real launch paths, enabled defaults, OpenCode
+minimum, and updater classifications match the 0.0.40 audit. The distribution
+and top-level CLI did change:
+
+- T3 now ships as a native platform executable with adjacent client assets and
+  native modules instead of a Node entry module plus source map;
+- the top-level CLI adds machine-level `update` and `uninstall` commands;
+- provider maintenance remains server-side, and a mise-owned provider
+  executable still resolves to manual-only (except Cursor's accepted
+  self-updater).
 
 Every provider resolves its executable from a per-instance `binaryPath` setting
 (`packages/contracts/src/settings.ts`), and on Linux the configured value is
@@ -125,7 +139,7 @@ no registry request.
 
 ### Live updater reproduction
 
-Run against `t3@0.0.40` with `--base-dir` pointing at a throwaway data dir. T3
+Run against T3 `0.0.42` with `--base-dir` pointing at a throwaway data dir. T3
 persists each provider snapshot to `<base-dir>/caches/<instanceId>.json`, which
 is where the derived command is read from.
 
@@ -286,13 +300,14 @@ seam the plan requires, and none of them installs or updates during discovery.
 
 ## Reproductions
 
-Static matrix (offline, needs a `t3@0.0.40` package; `npm i t3@0.0.40` in a
-scratch dir produces one):
+Static matrix (offline after acquiring the matching platform package and source
+tag):
 
 ```sh
-node scripts/audit-t3-providers.mjs --package node_modules/t3 --expect-version 0.0.40
-node scripts/audit-t3-providers.mjs --package node_modules/t3 --json
-node scripts/audit-t3-providers.mjs --package node_modules/t3 --mise --mise-versions
+node scripts/audit-t3-providers.mjs \
+  --package node_modules/@t3code/t3-linux-x64 \
+  --source-root /path/to/t3code \
+  --source-ref v0.0.42 --expect-version 0.0.42
 ```
 
 Live executable-override and updater reproduction:
@@ -302,7 +317,7 @@ Live executable-override and updater reproduction:
 # 2. decoy claude/codex/cursor-agent/opencode/grok earlier on PATH
 # 3. seed <base>/userdata/settings.json with providers.<kind>.{enabled,binaryPath}
 # 4. run:
-node node_modules/t3/dist/bin.mjs serve --base-dir <base> --port <p> --host 127.0.0.1
+/opt/t3/t3 serve --base-dir <base> --port <p> --host 127.0.0.1
 # 5. managed log shows every probe/launch; decoy log stays empty
 # 6. read the derived updater from <base>/caches/<kind>.json .versionAdvisory.updateCommand
 ```
@@ -319,10 +334,10 @@ curl -fsSL https://downloads.cursor.com/lab/<version>/linux/x64/agent-cli-packag
 
 ## Handoff
 
-- **Immutable entry discovery:** T3's package `bin.t3` (`dist/bin.mjs`); the
-  image path is `/opt/t3/lib/node_modules/t3/dist/bin.mjs`. Launch it with the
-  absolute image Node through the `/usr/local/bin/t3-admin` launcher, never
-  through a mise shim or an `env node` shebang; see
+- **Immutable entry discovery:** the platform package's native executable; the
+  image path is `/opt/t3/t3`. Launch it by absolute path through
+  `/usr/local/bin/t3-admin`, never through a mise shim, npm launcher, or PATH;
+  see
   [`infrastructure.md`](./infrastructure.md).
 - **Provider adapter contract:** one concrete absolute executable per instance
   via `<Provider>Settings.binaryPath`; optional per-instance home

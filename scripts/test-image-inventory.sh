@@ -114,7 +114,8 @@ check "T3_IMAGE_VERSION is stamped" \
 
 printf '\nBase + infrastructure (all variants)\n'
 check "image Node exists" "droot test -x /usr/local/bin/node"
-check "immutable T3 bundle exists" "droot test -f /opt/t3/lib/node_modules/t3/dist/bin.mjs"
+check "immutable T3 platform binary exists" "droot test -x /opt/t3/t3"
+check "T3 client shell exists beside the binary" "droot test -f /opt/t3/client/index.html"
 check "t3 launcher exists" "droot test -x /usr/local/bin/t3-admin"
 check "entrypoint exists" "droot test -x /usr/local/bin/entrypoint.sh"
 check "setup service ships" "droot test -f /opt/t3-setup/server.mjs"

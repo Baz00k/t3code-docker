@@ -215,25 +215,39 @@ RUN set -eux; \
 # against the registry. The agent harnesses are not baked and therefore carry
 # no pins here: the harness installer resolves and records an exact version on
 # explicit install.
-ARG T3_VERSION=0.0.40
+ARG T3_VERSION=0.0.42
+ARG TARGETARCH
 
-# T3 Code is image infrastructure. It installs into its own root-owned prefix
-# and is launched only through absolute paths - docker/bin/t3-admin passes the
-# entry module to the image Node - so nothing under a project, a mise shim, or
-# a user npm prefix can change which runtime the server runs.
+# T3 Code is image infrastructure. Its platform distribution installs into a
+# root-owned prefix and is launched only through an absolute path, so nothing
+# under a project, a mise shim, or a user npm prefix can select or replace it.
 ENV T3_INFRA_PREFIX=/opt/t3 \
     T3_INFRA_NODE=/usr/local/bin/node \
+    T3_INFRA_BINARY=/opt/t3/t3 \
     T3_INFRA_LAUNCHER=/usr/local/bin/t3-admin
 
-# node-pty has no Linux prebuilds and compiles here; build-essential and
-# python3 (in base above) are what make that work.
+# The release is split into architecture-specific packages. Install the
+# platform package explicitly instead of the tiny `t3` npm launcher, then
+# flatten it into one architecture-independent immutable path. Its native
+# modules and client assets must remain beside the executable.
 RUN set -eux; \
-    mkdir -p "$T3_INFRA_PREFIX"; \
-    npm install -g --no-audit --no-fund --prefix "$T3_INFRA_PREFIX" \
-        "t3@${T3_VERSION}"; \
+    case "$TARGETARCH" in \
+      amd64) t3_package='@t3code/t3-linux-x64' ;; \
+      arm64) t3_package='@t3code/t3-linux-arm64' ;; \
+      *) echo "unsupported T3 architecture: $TARGETARCH" >&2; exit 1 ;; \
+    esac; \
+    install_root=/tmp/t3-install; \
+    mkdir -p "$T3_INFRA_PREFIX" "$install_root"; \
+    npm install --no-audit --no-fund --ignore-scripts --prefix "$install_root" \
+        "${t3_package}@${T3_VERSION}"; \
+    package_root="$install_root/node_modules/$t3_package"; \
+    cp -a "$package_root/." "$T3_INFRA_PREFIX/"; \
+    # Keep the package manifest as local audit evidence; runtime does not need
+    # npm's surrounding node_modules layout.
+    test -x "$T3_INFRA_BINARY"; \
+    test -f "$T3_INFRA_PREFIX/client/index.html"; \
+    rm -rf "$install_root"; \
     npm cache clean --force; \
-    # Source maps are dead weight here (~140 MB across the image).
-    find "$T3_INFRA_PREFIX" -type f -name '*.map' -delete; \
     # Root-owned and not group/other writable: the t3 user runs the server and
     # must never be able to modify it.
     chown -R root:root "$T3_INFRA_PREFIX"; \

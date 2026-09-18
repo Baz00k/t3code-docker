@@ -16,7 +16,7 @@ Two targets build from one `Dockerfile`. `core` is the default and backs
 
 | Capability | `core` (default) | `browser` |
 | --- | :---: | :---: |
-| T3, setup UI, image Node, Python, Git/SSH, `gh`, `cloudflared` | Yes | Yes |
+| T3 platform binary, setup UI/image Node, Python, Git/SSH, `gh`, `cloudflared` | Yes | Yes |
 | mise and project toolchain support | Yes | Yes |
 | Agent harness installer/catalogue (`t3-harness`, `/opt/t3-harness`, `/opt/t3-provider`) | Yes | Yes |
 | Agent harness executables (baked) | No | No |

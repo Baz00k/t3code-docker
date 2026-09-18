@@ -163,21 +163,21 @@ check "mise ships" "docker exec $NAME mise --version"
 check "harness installer ships" "docker exec $NAME t3-harness --help"
 check "provider integration ships" "docker exec $NAME test -r /opt/t3-provider/cli.mjs"
 
-# T3 Code states the versions it needs in its own bundle, and it enforces them
+# T3 Code states the versions it needs in its own distribution, and it enforces them
 # at runtime: too old a `gh` and it reports "GitHub CLI is too old to report
 # sign-in status", too old an OpenCode and it refuses the server outright.
-# Debian's gh (2.46) sat below that floor for a while and made the CLI useless
-# inside T3 Code without anything here noticing, so read the floor back out of
-# the bundle and hold the image to it. If upstream raises a minimum, this fails
-# on the next build rather than in someone's session.
-# T3 now lives in its own root-owned immutable prefix, not the mutable npm
-# prefix the harnesses share. Read the prefix back from the image so there is
-# one source of truth rather than a second hard-coded path to drift from.
+# Debian's gh (2.46) sat below that floor for a while and made the CLI useless.
+# The binary distribution no longer exposes a source bundle to grep, so the
+# Dockerfile's explicit floor is the source of truth and live provider tests
+# prove the surrounding CLI remains usable.
 T3_PREFIX="$(docker exec "$NAME" printenv T3_INFRA_PREFIX 2>/dev/null || true)"
 [ -n "$T3_PREFIX" ] || T3_PREFIX=/opt/t3
-T3_BUNDLE="${T3_PREFIX}/lib/node_modules/t3/dist/bin.mjs"
-check "the immutable T3 bundle is where the image says it is" \
-  "docker exec $NAME test -f $T3_BUNDLE"
+T3_BINARY="$(docker exec "$NAME" printenv T3_INFRA_BINARY 2>/dev/null || true)"
+[ -n "$T3_BINARY" ] || T3_BINARY="${T3_PREFIX}/t3"
+check "the immutable T3 platform binary is where the image says it is" \
+  "docker exec $NAME test -x $T3_BINARY"
+check "the T3 client shell is available for the setup pill" \
+  "docker exec $NAME test -f $T3_PREFIX/client/index.html"
 check "T3 is not installed in the mutable npm prefix" \
   "docker exec $NAME test ! -e /opt/npm-global/lib/node_modules/t3"
 
@@ -188,11 +188,7 @@ version_at_least() {
 
 gh_meets_t3_minimum() {
   local declared installed
-  declared="$(docker exec "$NAME" sh -c \
-    "grep -o 'Update .gh. to [0-9][0-9.]* or newer' $T3_BUNDLE | head -1" 2>/dev/null \
-    | grep -o '[0-9][0-9.]*' | head -1)"
-  # Fall back to the floor the Dockerfile asserts if the wording moved.
-  [ -n "$declared" ] || declared="$(grep -m1 '^ARG GH_MIN_VERSION=' Dockerfile | cut -d= -f2)"
+  declared="$(grep -m1 '^ARG GH_MIN_VERSION=' Dockerfile | cut -d= -f2)"
   installed="$(docker exec "$NAME" gh --version 2>/dev/null | head -1 | awk '{print $3}')"
   [ -n "$installed" ] || return 1
   GH_DECLARED="$declared"; GH_INSTALLED="$installed"
@@ -555,10 +551,10 @@ check "T3 Code is pointed at the shipped binary" \
 
 cloudflared_matches_t3() {
   local want have
-  want="$(docker exec "$NAME" sh -c \
-    "grep -o 'cloudflared/releases/download/[0-9.]*' $T3_BUNDLE | head -1" 2>/dev/null \
-    | sed 's|.*/||')"
-  [ -n "$want" ] || return 0
+  # The binary distribution has no greppable server bundle. The Dockerfile pin
+  # is the repository-owned compatibility assertion; live port tests below
+  # prove T3 accepts and invokes the shipped executable.
+  want="$(grep -m1 '^ARG CLOUDFLARED_VERSION=' Dockerfile | cut -d= -f2)"
   have="$(docker exec "$NAME" cloudflared --version 2>/dev/null | awk '{print $3}')"
   CF_WANT="$want"; CF_HAVE="$have"
   [ "$want" = "$have" ]

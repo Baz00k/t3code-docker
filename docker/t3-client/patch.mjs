@@ -1,8 +1,8 @@
 #!/usr/bin/env node
 // Inject the setup-console pill into T3 Code's client shell.
 //
-// Runs at image build time, after `npm install -g t3`. The shell is a static
-// file upstream owns, so this reads like any other build step that would fail
+// Runs at image build time, after installing T3's platform package. The shell
+// is a static file upstream owns, so this reads like any other build step that would fail
 // loudly rather than ship: if a future release moves the `</body>` or renames
 // the client directory, the build stops here, and scripts/smoke-test.sh checks
 // the served HTML again in the running container. Both exist so a T3 bump
@@ -16,7 +16,7 @@ import { readFileSync, writeFileSync } from "node:fs";
 // T3 lives in the root-owned immutable prefix, not the mutable npm prefix.
 const T3_PREFIX = process.env.T3_INFRA_PREFIX || "/opt/t3";
 const SHELL = process.env.T3_CLIENT_SHELL
-  || `${T3_PREFIX}/lib/node_modules/t3/dist/client/index.html`;
+  || `${T3_PREFIX}/client/index.html`;
 const PILL = process.env.T3_SETUP_PILL
   || "/usr/local/share/t3-client/setup-pill.js";
 const MARKER = "t3-setup-pill";

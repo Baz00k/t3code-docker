@@ -19,16 +19,17 @@ T3_HOME=/home/t3
 : "${T3_SETUP_ENABLED:=1}"
 : "${T3_SETUP_PORT:=3774}"
 : "${T3_PERSIST_AGENT_CREDENTIALS:=1}"
-# The image's own runtime. T3 and the setup service run under the image Node
-# against the root-owned T3 bundle, never through whatever `node`/`t3` PATH
-# happens to resolve to. Overridable for tests; see docs/toolchain/infrastructure.md.
+# The image's own runtimes. T3 runs as the root-owned platform binary; setup
+# and repository JavaScript helpers run under the image Node. Neither resolves
+# `node` or `t3` through PATH. Overridable for tests; see infrastructure.md.
 : "${T3_INFRA_NODE:=/usr/local/bin/node}"
+: "${T3_INFRA_BINARY:=/opt/t3/t3}"
 : "${T3_INFRA_LAUNCHER:=/usr/local/bin/t3-admin}"
 # Provider integration: maps the harness manager's selection onto T3's
 # per-provider `binaryPath`. See docs/toolchain/provider-integration.md.
 : "${T3_PROVIDER_CLI:=/opt/t3-provider/cli.mjs}"
 export T3CODE_HOME T3CODE_HOST T3CODE_PORT T3_WORKSPACE T3_SETUP_PORT
-export T3_INFRA_NODE T3_INFRA_LAUNCHER T3_PROVIDER_CLI
+export T3_INFRA_NODE T3_INFRA_BINARY T3_INFRA_LAUNCHER T3_PROVIDER_CLI
 
 # Ownership migration is recorded here before anything else changes. The state
 # directory is the one path every deployment mounts, so a marker written there

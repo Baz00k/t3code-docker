@@ -213,12 +213,6 @@ jobs:
     permissions:
       contents: read
       packages: read
-    env:
-      # Pin freshness is a source-hygiene check, reported separately below; the
-      # rehearsal waiver keeps promotion gated on artifact behaviour while the
-      # T3 binary-distribution migration is pending (see ci-evidence.md). The
-      # release path in build.yml never waives it.
-      T3_SMOKE_ALLOW_OUTDATED_PINS: "1"
     strategy:
       fail-fast: false
       matrix: ${{ fromJSON(needs.prepare.outputs.test_matrix) }}

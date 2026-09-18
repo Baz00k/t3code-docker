@@ -1,9 +1,9 @@
 #!/usr/bin/env bash
 # Run T3 Code through the image's own immutable infrastructure.
 #
-# T3 must always execute under the image Node against the root-owned bundle
-# under $T3_INFRA_PREFIX - never through a project toolchain, a mise shim, or
-# T3's own `#!/usr/bin/env node` bin shim. Every administrative call in this
+# T3 must always execute the root-owned platform binary under $T3_INFRA_PREFIX
+# - never through a project toolchain, a mise shim, or the npm launcher's
+# `#!/usr/bin/env node` shim. Every administrative call in this
 # image (the entrypoint, setup console, t3-pair, t3-login, t3-doctor) goes
 # through here, and `/usr/local/bin/t3` is a symlink to it, so there is exactly
 # one resolution rule. The single seam is also what keeps a shadowed `node` or
@@ -12,17 +12,12 @@
 # The locations can be overridden for tests; see docs/toolchain/infrastructure.md.
 set -euo pipefail
 
-node="${T3_INFRA_NODE:-/usr/local/bin/node}"
 prefix="${T3_INFRA_PREFIX:-/opt/t3}"
-entry="${T3_INFRA_ENTRY:-${prefix}/lib/node_modules/t3/dist/bin.mjs}"
+binary="${T3_INFRA_BINARY:-${prefix}/t3}"
 
-if [ ! -x "$node" ]; then
-  printf 't3-admin: image Node not found at %s\n' "$node" >&2
-  exit 127
-fi
-if [ ! -f "$entry" ]; then
-  printf 't3-admin: T3 bundle not found at %s\n' "$entry" >&2
+if [ ! -x "$binary" ]; then
+  printf 't3-admin: T3 platform binary not found at %s\n' "$binary" >&2
   exit 127
 fi
 
-exec "$node" "$entry" "$@"
+exec "$binary" "$@"

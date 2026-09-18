@@ -44,18 +44,10 @@ hardware.
 
 Smoke's final assertion is that the pins were current at build time. That is a
 source-hygiene check, not an artifact property, and the release `versions` job
-reports drift informationally. The candidate rehearsal waives it with
-`T3_SMOKE_ALLOW_OUTDATED_PINS=1` and records `pinFreshness: "waived"` in its
-evidence, while reporting the same drift informationally in the run summary.
-The release path in `build.yml` never sets the waiver, so an official tag still
-requires current pins.
-
-The waiver exists because T3 0.0.42 replaced the patchable npm bundle with a
-platform-specific binary distribution, which the immutable-infrastructure and
-setup-pill steps do not survive; see
-[Known Blocker](#known-blocker-t3-0042-binary-distribution). Rehearsals must not
-be blocked by a migration owned by another effort. TM-16 removes the waiver
-once that migration lands.
+reports drift informationally. Both the candidate rehearsal and the release
+path run smoke without a waiver, so their evidence records
+`pinFreshness: "asserted"`. T3 0.0.42's platform-package migration restored a
+clean pin and removed the temporary rehearsal exception.
 
 ## Workflows
 
@@ -257,26 +249,6 @@ scratch branch `tm/11-failure-rehearsal` at `de6aadf`): `core` built for both
 architectures, the amd64 smoke step failed on the injected defect, `promote` was
 skipped because a test job failed, and the run produced build evidence only - no
 `candidate-tested-core`, no `candidate-evidence`, no candidate manifest.
-
-## Known Blocker: T3 0.0.42 Binary Distribution
-
-Discovered while preparing TM-11's first rehearsal. T3 0.0.42 replaces the
-patchable npm bundle with a per-platform executable:
-
-- `t3@0.0.42` is a 1.5 KB launcher that resolves `@t3code/t3-<platform>-<arch>`;
-- `@t3code/t3-linux-x64@0.0.42` is a 64 MB tarball containing a 161 MB ELF
-  executable plus `client/` assets and native `node_modules`;
-- `/opt/t3/lib/node_modules/t3/dist/client/index.html` no longer exists, so
-  `docker/t3-client/patch.mjs` fails the build for every target.
-
-Migrating means reworking the immutable launch path (`node <entry>` becomes the
-binary), the setup-pill injection, and re-verifying the provider seams audited
-in [`provider-audit.md`](./provider-audit.md). That is an infrastructure
-migration, not a pin refresh. T3 stays at 0.0.40, and rehearsals waive the
-freshness assertion until the migration lands. Tracked as
-[TM-16](https://github.com/Baz00k/t3code-docker/issues/18); it blocks the strict
-release path while the pin check is in place, so the atomic switch must not be
-tagged until TM-16 lands (or the policy is deliberately changed).
 
 ## Unavailable Checks
 

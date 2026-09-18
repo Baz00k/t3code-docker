@@ -2,9 +2,9 @@
 // Audit the pinned T3 Code release for how each supported harness is
 // discovered, launched, probed, and updated.
 //
-// The audit reads the published `t3` npm package (no network for the core
-// pass). Modern T3 bundles its server, but ships the original TypeScript in
-// `dist/bin.mjs.map`; this script extracts those sources and reads the facts
+// The audit reads the published platform package and the matching tagged T3
+// source tree. The self-contained binary has no source map, so the release tag
+// is the reproducible source evidence for the facts
 // that decide the harness-management design:
 //
 //   * the per-provider `binaryPath` setting and its default;
@@ -17,12 +17,11 @@
 // `docs/toolchain/provider-audit.md`.
 //
 // Usage:
-//   node scripts/audit-t3-providers.mjs --package /path/to/node_modules/t3
-//   node scripts/audit-t3-providers.mjs                 # auto-detect an installed t3
+//   node scripts/audit-t3-providers.mjs --package /opt/t3 --source-root /path/to/t3code
 //   node scripts/audit-t3-providers.mjs --json          # machine-readable matrix
 //   node scripts/audit-t3-providers.mjs --mise          # add local mise install sources
 //   node scripts/audit-t3-providers.mjs --mise --mise-versions
-//   node scripts/audit-t3-providers.mjs --expect-version 0.0.40
+//   node scripts/audit-t3-providers.mjs --expect-version 0.0.42
 //
 // Exit status is 0 only when every provider has complete evidence tied to the
 // inspected package. `--expect-version` turns a version mismatch into an error.
@@ -110,6 +109,8 @@ class AuditError extends Error {}
 function parseArgs(argv) {
   const options = {
     package: null,
+    sourceRoot: null,
+    sourceRef: null,
     json: false,
     mise: false,
     miseVersions: false,
@@ -126,6 +127,14 @@ function parseArgs(argv) {
         break;
       case "--json":
         options.json = true;
+        break;
+      case "--source-root":
+        options.sourceRoot = argv[++i] ?? null;
+        if (!options.sourceRoot) throw new AuditError("--source-root needs a path");
+        break;
+      case "--source-ref":
+        options.sourceRef = argv[++i] ?? null;
+        if (!options.sourceRef) throw new AuditError("--source-ref needs a value");
         break;
       case "--mise":
         options.mise = true;
@@ -154,7 +163,9 @@ const usage = () => {
     [
       "Audit the pinned T3 release's provider execution and update seams.",
       "",
-      "  --package, -p <dir>     Path to an installed `t3` package directory",
+      "  --package, -p <dir>     Path to an installed T3 platform package",
+      "  --source-root <dir>     Matching t3code release source tree",
+      "  --source-ref <ref>      Expected git ref/commit for that source tree",
       "  --json                  Emit the matrix as JSON",
       "  --mise                  Add local mise install-source metadata",
       "  --mise-versions         Also query mise for available versions (network)",
@@ -168,7 +179,7 @@ const usage = () => {
 function isT3PackageDir(dir) {
   try {
     const pkg = JSON.parse(NodeFS.readFileSync(NodePath.join(dir, "package.json"), "utf8"));
-    return pkg.name === "t3";
+    return pkg.name === "t3" || /^@t3code\/t3-/.test(pkg.name);
   } catch {
     return false;
   }
@@ -190,6 +201,8 @@ function candidateGlobalRoots() {
     // npm may be absent in a minimal runtime; the fixed roots below still apply.
   }
   roots.push(
+    "/opt/t3",
+    "/opt/t3/package",
     "/opt/t3/lib/node_modules/t3",
     "/usr/local/lib/node_modules/t3",
     "/usr/lib/node_modules/t3",
@@ -209,23 +222,53 @@ function resolvePackageRoot(explicit) {
   throw new AuditError("no t3 package found; pass --package <dir>");
 }
 
-function normalizeSourcePath(source) {
-  return source.replace(/^(?:\.\.\/)+/, "");
+function loadReleaseSources(sourceRoot) {
+  const root = NodePath.resolve(sourceRoot);
+  const logicalPaths = new Set([
+    SETTINGS_SOURCE,
+    MAINTENANCE_SOURCE,
+    ENTRY_SOURCE,
+    ...RUNTIME_SOURCES,
+    ...PROVIDERS.flatMap((spec) => [spec.driverSource, spec.probeSource, ...spec.launchSources]),
+  ]);
+  const sources = new Map();
+  for (const logicalPath of logicalPaths) {
+    const candidates = logicalPath.startsWith("packages/")
+      ? [NodePath.join(root, logicalPath)]
+      : [NodePath.join(root, "apps/server", logicalPath), NodePath.join(root, logicalPath)];
+    const path = candidates.find((candidate) => NodeFS.existsSync(candidate));
+    if (!path) throw new AuditError(`source not found in release tree: ${logicalPath}`);
+    sources.set(logicalPath, NodeFS.readFileSync(path, "utf8"));
+  }
+  return sources;
 }
 
-function loadSources(mapPath) {
-  const map = JSON.parse(NodeFS.readFileSync(mapPath, "utf8"));
-  const sources = new Map();
-  if (!Array.isArray(map.sources) || !Array.isArray(map.sourcesContent)) {
-    throw new AuditError("bin.mjs.map has no sourcesContent; cannot audit statically");
+function verifySourceRef(sourceRoot, expectedRef) {
+  if (!expectedRef) return null;
+  let actual;
+  try {
+    actual = NodeChildProcess.execFileSync("git", ["-C", sourceRoot, "rev-parse", "HEAD"], {
+      encoding: "utf8",
+      stdio: ["ignore", "pipe", "pipe"],
+      timeout: 15_000,
+    }).trim();
+  } catch {
+    throw new AuditError("--source-ref requires --source-root to be a git checkout");
   }
-  map.sources.forEach((source, index) => {
-    const content = map.sourcesContent[index];
-    if (typeof content === "string") {
-      sources.set(normalizeSourcePath(source), content);
-    }
-  });
-  return sources;
+  let expected;
+  try {
+    expected = NodeChildProcess.execFileSync("git", ["-C", sourceRoot, "rev-parse", expectedRef], {
+      encoding: "utf8",
+      stdio: ["ignore", "pipe", "pipe"],
+      timeout: 15_000,
+    }).trim();
+  } catch {
+    throw new AuditError(`source ref does not resolve: ${expectedRef}`);
+  }
+  if (actual !== expected) {
+    throw new AuditError(`source checkout ${actual} != expected ${expectedRef} (${expected})`);
+  }
+  return { requested: expectedRef, commit: actual };
 }
 
 function requireSource(sources, fragment) {
@@ -394,16 +437,15 @@ function auditMaintenanceSeam(sources) {
   return { file: file.path, checks };
 }
 
-function auditEntrySeam(sources, pkg) {
+function auditEntrySeam(sources) {
   const entry = requireSource(sources, ENTRY_SOURCE);
   const subcommandBlock = firstMatch(entry.content, /withSubcommands\(\[([\s\S]*?)\]\)/);
   const subcommands = subcommandBlock
     ? [...subcommandBlock.matchAll(/([A-Za-z]+Command)/g)].map((match) => match[1])
     : [];
-  const binPath = typeof pkg.bin === "string" ? pkg.bin : pkg.bin?.t3 ?? null;
   return {
-    bin: binPath,
-    entryModule: binPath ? `dist/${NodePath.basename(binPath)}` : null,
+    bin: "t3",
+    entryModule: "native platform executable",
     subcommands,
   };
 }
@@ -557,21 +599,18 @@ function main() {
 
   const packageRoot = resolvePackageRoot(options.package);
   const pkg = JSON.parse(NodeFS.readFileSync(NodePath.join(packageRoot, "package.json"), "utf8"));
-  const binPath = typeof pkg.bin === "string" ? pkg.bin : pkg.bin?.t3 ?? null;
-  if (!binPath) throw new AuditError("package.json has no `t3` bin entry");
-
-  const bundlePath = NodePath.join(packageRoot, binPath);
-  const mapPath = `${bundlePath}.map`;
-  if (!NodeFS.existsSync(mapPath)) {
-    throw new AuditError(`no source map at ${mapPath}; cannot audit ${pkg.version} statically`);
+  if (!options.sourceRoot) {
+    throw new AuditError("the binary distribution has no source map; pass --source-root for the matching release tag");
   }
-  const sources = loadSources(mapPath);
+  const source = verifySourceRef(options.sourceRoot, options.sourceRef);
+  const sources = loadReleaseSources(options.sourceRoot);
 
   const report = {
     version: pkg.version,
     integrity: pkg.dist?.integrity ?? null,
     packageRoot,
-    entry: auditEntrySeam(sources, pkg),
+    source,
+    entry: auditEntrySeam(sources),
     maintenance: auditMaintenanceSeam(sources),
     providers: PROVIDERS.map((spec) => auditProvider(sources, spec)),
     mise: options.mise ? auditMiseTools(options) : null,

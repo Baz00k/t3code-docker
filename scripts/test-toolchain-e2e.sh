@@ -195,20 +195,21 @@ wait_pid() { # pattern timeout seconds
   return 1
 }
 
-assert_image_node() { # label
-  local prefix bundle pid spid health
+assert_immutable_infrastructure() { # label
+  local prefix binary pid spid health
   prefix="$(droot printenv T3_INFRA_PREFIX 2>/dev/null || true)"
   [ -n "$prefix" ] || prefix=/opt/t3
-  bundle="${prefix}/lib/node_modules/t3/dist/bin.mjs"
+  binary="$(droot printenv T3_INFRA_BINARY 2>/dev/null || true)"
+  [ -n "$binary" ] || binary="${prefix}/t3"
 
   health="$(droot curl -s --noproxy '*' --max-time 5 -o /dev/null -w '%{http_code}' \
     "http://127.0.0.1:3773/.well-known/t3/environment" 2>/dev/null || true)"
   is "$1: T3 answers health while a project Node is selected" "200" "$health"
 
-  pid="$(wait_pid '*t3/dist/bin.mjs*serve*' 30)"
+  pid="$(wait_pid "*$binary*serve*" 30)"
   if [ -n "$pid" ]; then
-    is "$1: T3 server runs the image Node" "/usr/local/bin/node" "$(proc_exe "$pid")"
-    has "$1: T3 server command names the immutable bundle" "$bundle" "$(proc_cmdline "$pid")"
+    is "$1: T3 server runs the immutable platform binary" "$binary" "$(proc_exe "$pid")"
+    has "$1: T3 server command names the immutable platform binary" "$binary" "$(proc_cmdline "$pid")"
   else
     no "$1: could not find the running T3 server process"
   fi
@@ -352,7 +353,7 @@ if [ "$project_node" != "$image_node" ]; then
 else
   no "the project Node did not differ from the image Node ($project_node)"
 fi
-assert_image_node "online"
+assert_immutable_infrastructure "online"
 
 section "Credentials (surfaces only; no provider accounts)"
 save_credentials
@@ -534,7 +535,7 @@ project_node_after="$(ulogin "$PROJECT" 'mise exec -- node --version' 2>/dev/nul
 matches "project Node still selected after recreation" "^v${NODE_SELECTOR}\." "$project_node_after"
 is "opencode credentials still present after recreation" "e2e-test-key" \
   "$(dex sh -c 'cat /home/t3/.local/share/opencode/auth.json' | jq -r '.anthropic.key')"
-assert_image_node "recreated"
+assert_immutable_infrastructure "recreated"
 
 section "Offline recreation on the same volume"
 recreate --network none
@@ -544,7 +545,7 @@ else
   no "T3 never became healthy offline"
   droot sh -c 'tail -40 /home/t3/.t3/logs/server.log 2>/dev/null || true' || true
 fi
-assert_image_node "offline"
+assert_immutable_infrastructure "offline"
 project_node_offline="$(ulogin "$PROJECT" 'mise exec -- node --version' 2>/dev/null || true)"
 matches "project Node still selected offline" "^v${NODE_SELECTOR}\." "$project_node_offline"
 is "mise selection is unchanged offline" "$post_uninstall_ls" "$(mise_ls)"

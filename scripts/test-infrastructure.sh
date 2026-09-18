@@ -5,11 +5,12 @@
 #
 # The unit under test is isolation, not features:
 #
-#   - `t3`, the setup service and every administrative helper launch the image
-#     Node against the root-owned T3 bundle, even with decoys shadowing
+#   - `t3` and every administrative helper launch the root-owned platform
+#     binary, while setup launches the image Node, even with decoys shadowing
 #     `node`/`t3` on PATH;
-#   - the running processes provably are that Node and that bundle;
-#   - the unprivileged user cannot write the image Node or the T3 tree;
+#   - the running processes provably are that binary and image Node;
+#   - the unprivileged user cannot write the platform binary, image Node, or
+#     T3 tree;
 #   - user npm globals still install, into the mutable prefix, without touching
 #     the T3 tree;
 #   - root gets neither the user npm prefix nor any user tool directory.
@@ -71,7 +72,8 @@ done
 printf '\nImmutable launcher\n'
 T3_PREFIX="$(docker exec "$NAME" printenv T3_INFRA_PREFIX 2>/dev/null || true)"
 [ -n "$T3_PREFIX" ] || T3_PREFIX=/opt/t3
-T3_BUNDLE="${T3_PREFIX}/lib/node_modules/t3/dist/bin.mjs"
+T3_BINARY="$(docker exec "$NAME" printenv T3_INFRA_BINARY 2>/dev/null || true)"
+[ -n "$T3_BINARY" ] || T3_BINARY="${T3_PREFIX}/t3"
 
 check "the image declares its immutable T3 prefix" \
   "docker exec $NAME printenv T3_INFRA_PREFIX"
@@ -79,8 +81,10 @@ check "t3 resolves to the immutable launcher" \
   "[ \"\$(docker exec $NAME sh -c 'command -v t3')\" = /usr/local/bin/t3 ]"
 check "the t3 command is the launcher, not a symlink into npm" \
   "[ \"\$(docker exec $NAME readlink -f /usr/local/bin/t3)\" = /usr/local/bin/t3-admin ]"
-check "the immutable bundle exists at \${T3_INFRA_PREFIX}" \
-  "docker exec $NAME test -f $T3_BUNDLE"
+check "the immutable platform binary exists at \${T3_INFRA_PREFIX}" \
+  "docker exec $NAME test -x $T3_BINARY"
+check "the patchable client shell sits beside the platform binary" \
+  "docker exec $NAME test -f $T3_PREFIX/client/index.html"
 check "T3 is absent from the mutable npm prefix" \
   "docker exec $NAME test ! -e /opt/npm-global/lib/node_modules/t3"
 check "the T3 tree is root-owned" \
@@ -128,13 +132,13 @@ check "no decoy was executed by the launcher or t3-pair" \
   "[ -z \"\$(shadow_log)\" ]"
 
 printf '\nRunning processes\n'
-pid="$(find_pid '*t3/dist/bin.mjs*serve*' || true)"
+pid="$(find_pid "*$T3_BINARY*serve*" || true)"
 if [ -n "$pid" ]; then
-  ok "the server runs the image T3 bundle (pid $pid)"
-  check "the server process is the image Node" \
-    "[ \"\$(proc_exe $pid)\" = /usr/local/bin/node ]"
-  check "the server command line names the immutable bundle" \
-    "proc_cmdline $pid | grep -q '$T3_BUNDLE'"
+  ok "the server runs the image T3 platform binary (pid $pid)"
+  check "the server process is the immutable platform binary" \
+    "[ \"\$(proc_exe $pid)\" = $T3_BINARY ]"
+  check "the server command line names the immutable platform binary" \
+    "proc_cmdline $pid | grep -q '$T3_BINARY'"
 else
   no "could not find the running T3 server process"
 fi
@@ -159,10 +163,10 @@ for _ in $(seq 1 40); do
   sleep 1
 done
 if [ -n "$shadow_pid" ]; then
-  check "a server started under a shadowed PATH is the image Node" \
-    "[ \"\$(proc_exe $shadow_pid)\" = /usr/local/bin/node ]"
-  check "its command line names the immutable bundle" \
-    "proc_cmdline $shadow_pid | grep -q '$T3_BUNDLE'"
+  check "a server started under a shadowed PATH is the platform binary" \
+    "[ \"\$(proc_exe $shadow_pid)\" = $T3_BINARY ]"
+  check "its command line names the immutable platform binary" \
+    "proc_cmdline $shadow_pid | grep -q '$T3_BINARY'"
   docker exec "$NAME" kill "$shadow_pid" >/dev/null 2>&1 || true
 else
   no "a server could not be started under a shadowed PATH"
@@ -171,8 +175,8 @@ fi
 printf '\nForbidden writes\n'
 check "the t3 user cannot write the T3 prefix" \
   "docker exec -u t3 $NAME sh -c '! touch $T3_PREFIX/forbidden 2>/dev/null'"
-check "the t3 user cannot write the T3 entry module" \
-  "docker exec -u t3 $NAME sh -c '! touch $T3_BUNDLE 2>/dev/null'"
+check "the t3 user cannot write the T3 platform binary" \
+  "docker exec -u t3 $NAME sh -c '! touch $T3_BINARY 2>/dev/null'"
 check "the t3 user cannot write the image Node" \
   "docker exec -u t3 $NAME sh -c '! touch /usr/local/bin/node 2>/dev/null'"
 check "the t3 user cannot write the image Node modules" \

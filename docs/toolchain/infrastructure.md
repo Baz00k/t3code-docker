@@ -1,8 +1,9 @@
 # Immutable T3 Infrastructure
 
-TM-03 deliverable. T3 Code and the setup service run under the image's own Node
-against a root-owned T3 bundle; user-installed and baked tooling lives somewhere
-writable, separately. This note records the paths, the one launcher every
+TM-03 deliverable, updated by TM-16. T3 Code runs as a root-owned native
+platform binary, while the setup service runs under the image's own Node;
+user-installed tooling lives somewhere writable, separately. This note records
+the paths, the one launcher every
 administrative call goes through, the mutable npm prefix, and where user
 initialization belongs.
 
@@ -16,7 +17,8 @@ provider matrix is
 | Role | Path | Owner | Writable at runtime |
 | --- | --- | --- | :---: |
 | Image Node | `/usr/local/bin/node` | `root` | no |
-| T3 bundle | `/opt/t3/lib/node_modules/t3/dist/bin.mjs` | `root` | no |
+| T3 platform binary | `/opt/t3/t3` | `root` | no |
+| T3 client assets | `/opt/t3/client` | `root` | no |
 | Immutable launcher | `/usr/local/bin/t3-admin` | `root` | no |
 | `t3` command | `/usr/local/bin/t3` (symlink to `t3-admin`) | `root` | no |
 | Setup service | `/opt/t3-setup/server.mjs` (run by the image Node) | `root` | no |
@@ -35,14 +37,15 @@ used to rewrite the server out from under itself.
 `docker/bin/t3-admin` is the single resolution rule:
 
 ```sh
-exec "$T3_INFRA_NODE" "$T3_INFRA_ENTRY" "$@"
+exec "$T3_INFRA_BINARY" "$@"
 ```
 
-with defaults `T3_INFRA_NODE=/usr/local/bin/node`,
-`T3_INFRA_PREFIX=/opt/t3`, and
-`T3_INFRA_ENTRY=${T3_INFRA_PREFIX}/lib/node_modules/t3/dist/bin.mjs`. It exits
-`127` with a message if the Node binary or the bundle is missing, so a broken
+with defaults `T3_INFRA_PREFIX=/opt/t3` and
+`T3_INFRA_BINARY=${T3_INFRA_PREFIX}/t3`. It exits
+`127` with a message if the platform binary is missing, so a broken
 image fails loudly instead of silently falling back to something on `PATH`.
+`T3_INFRA_NODE=/usr/local/bin/node` remains the absolute runtime for setup and
+the image's own JavaScript helpers; it is no longer T3's runtime.
 
 Every administrative call goes through it or the `t3` symlink:
 
@@ -55,13 +58,14 @@ Every administrative call goes through it or the `t3` symlink:
 | `docker/bin/t3-doctor` | `"$T3_INFRA_LAUNCHER" --version` |
 | `docker/setup/server.mjs` | `run(T3_LAUNCHER, ...)` with `T3_LAUNCHER` defaulting to `/usr/local/bin/t3-admin` |
 
-`T3_INFRA_NODE`, `T3_INFRA_PREFIX`, `T3_INFRA_ENTRY`, and `T3_INFRA_LAUNCHER` are
+`T3_INFRA_NODE`, `T3_INFRA_PREFIX`, `T3_INFRA_BINARY`, and `T3_INFRA_LAUNCHER` are
 overridable so `scripts/test-infrastructure.sh` can point at a fixture - and so
 the launcher itself is testable - but the image sets sane immutable defaults.
 
-The npm-generated `#!/usr/bin/env node` bin shim under `/opt/t3/bin` is **not**
-on `PATH` and must not be used by any runtime path: `env node` is exactly the
-shebang that reintroduces whatever a project or mise put first on `PATH`.
+The tiny `t3` npm launcher's `#!/usr/bin/env node` shim is not installed. The
+image installs `@t3code/t3-linux-{x64,arm64}` explicitly and flattens the
+matching package into `/opt/t3`, preserving its executable, native modules,
+resource monitor, and patchable `client/index.html` together.
 
 ## Mutable npm prefix
 
@@ -111,7 +115,8 @@ root's default `HOME` and `PATH` stay free of user-controlled tools.
 
 - root `HOME` is `/root`; root `PATH` contains no `/home/t3` entry;
 - `NPM_CONFIG_PREFIX` is unset, so root npm uses `/usr/local`;
-- the T3 tree and the image Node are root-owned and not group/other writable;
+- the T3 tree, platform binary, and image Node are root-owned and not
+  group/other writable;
   the `t3` user cannot write them.
 
 ## Verification
@@ -126,13 +131,12 @@ scripts/smoke-test.sh t3code:browser
 `test-infrastructure.sh` covers:
 
 - `t3` resolves to `/usr/local/bin/t3`, which is the immutable launcher, and the
-  immutable bundle is present with no `t3` under the mutable prefix;
+  immutable platform binary is present with no `t3` under the mutable prefix;
 - decoy `node`/`t3`/`t3-admin` come first on `PATH`: a bare command is shadowed,
   but `t3-admin`, `t3`, and `t3-pair` still succeed and execute no decoy;
-- the running server and setup service processes are `/usr/local/bin/node` with
-  the immutable bundle on their command line, including a server started under
-  the shadowed `PATH`;
-- the `t3` user cannot write the T3 prefix, the entry module, the image Node, or
+- the running server is `/opt/t3/t3`, while setup is `/usr/local/bin/node`; the
+  same remains true for a server started under the shadowed `PATH`;
+- the `t3` user cannot write the T3 prefix, platform binary, image Node, or
   `/usr/local/lib/node_modules`, and nothing under `/opt/t3` is group/other
   writable;
 - a user npm global install from a local tarball succeeds into
