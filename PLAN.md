@@ -1,13 +1,10 @@
 # T3 Code Docker — Research & Implementation Plan
 
-> **Historical research record.** This is the original design research for the
-> upstream image, written before the mise toolchain-management effort. It
-> describes the transitional `slim`/`full` product (baked harnesses, baked
-> runtimes, `latest=full`), which the product switch replaced with `core` /
-> `browser` (mise-managed toolchains and harnesses, `latest=core`). See
-> [`TOOLCHAIN-MANAGEMENT-PLAN.md`](TOOLCHAIN-MANAGEMENT-PLAN.md) and
-> [`docs/toolchain/migration.md`](docs/toolchain/migration.md) for the current
-> contract.
+> **Historical research record.** This is the original image design research.
+> It describes the former `slim`/`full` product with baked runtimes and
+> harnesses. The current `core`/`browser` contracts are documented under
+> [`docs/toolchain/`](docs/toolchain/), and migration guidance is in
+> [`docs/toolchain/migration.md`](docs/toolchain/migration.md).
 
 **Goal:** a batteries-included Docker image that runs [T3 Code](https://github.com/pingdotgg/t3code)
 as a headless server on a Linux box, so that a phone (T3 Code iOS/Android app) or a browser is the

@@ -10,8 +10,7 @@
 #
 # When a harness has been installed through the harness manager, the login runs
 # that exact mise-managed executable - the same one T3 launches - so credentials
-# land in the home the managed harness reads. Otherwise it falls back to the
-# baked harness on PATH, which is what the transitional images still ship.
+# land in the home the managed harness reads.
 set -euo pipefail
 
 # T3 runs through the immutable image infrastructure, never a PATH resolution.
@@ -53,9 +52,8 @@ restart the container afterwards.
 USAGE
 }
 
-# The managed executable for a harness when one is runnable, else the name
-# resolved from PATH (empty when neither exists).
-harness_exec() { # id name
+# The managed executable for a harness when one is runnable.
+harness_exec() { # id
   local managed=""
   if [ -r "$T3_PROVIDER_CLI" ] && [ -x "$T3_INFRA_NODE" ]; then
     managed="$("$T3_INFRA_NODE" "$T3_PROVIDER_CLI" resolve "$1" 2>/dev/null || true)"
@@ -64,20 +62,20 @@ harness_exec() { # id name
     printf '%s' "$managed"
     return 0
   fi
-  command -v "$2" 2>/dev/null || true
+  return 0
 }
 
 harness="${1:-}"
 case "$harness" in
   claude|codex|opencode|cursor|grok)
     case "$harness" in
-      claude)   bin="$(harness_exec claude claude)";     args=(auth login) ;;
-      codex)    bin="$(harness_exec codex codex)";       args=(login) ;;
-      opencode) bin="$(harness_exec opencode opencode)"; args=(auth login) ;;
+      claude)   bin="$(harness_exec claude)";     args=(auth login) ;;
+      codex)    bin="$(harness_exec codex)";       args=(login) ;;
+      opencode) bin="$(harness_exec opencode)"; args=(auth login) ;;
       # cursor-agent is canonical; the native installer's `agent` alias is
       # never relied on (see docs/toolchain/provider-contract.md).
-      cursor)   bin="$(harness_exec cursor cursor-agent)"; args=(login) ;;
-      grok)     bin="$(harness_exec grok grok)";         args=(login) ;;
+      cursor)   bin="$(harness_exec cursor)"; args=(login) ;;
+      grok)     bin="$(harness_exec grok)";         args=(login) ;;
     esac
     if [ -z "$bin" ]; then
       echo "t3-login: $harness is not installed; install it with t3-harness install $harness" >&2

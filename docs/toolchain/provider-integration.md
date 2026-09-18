@@ -15,23 +15,22 @@ scripts/test-provider-integration.sh t3code:core t3code:browser # 54 container a
 The durable provider contract is in
 [`provider-contract.md`](./provider-contract.md); the manager API is in
 [`harness-api.md`](./harness-api.md); mise storage and policy are in
-[`project-execution.md`](./project-execution.md). The canonical product
-contract is [`TOOLCHAIN-MANAGEMENT-PLAN.md`](../../TOOLCHAIN-MANAGEMENT-PLAN.md).
+[`project-execution.md`](./project-execution.md).
 
 ## The seam
 
 T3 Code reads provider configuration from
 `$T3CODE_HOME/userdata/settings.json` (`ServerConfig.deriveServerPaths`). Each
 provider has an absolute `binaryPath` setting, and on Linux the driver spawns
-that value verbatim for its probe **and** its real launch (the audit's
-reproduction). T3 watches the settings file and re-reads it live, so a write
+that value verbatim for its probe **and** its real launch. T3 watches the
+settings file and re-reads it live, so a write
 reaches a running server without a restart.
 
 Two representations exist in the file:
 
 | Representation | Key | Behaviour |
 | --- | --- | --- |
-| Legacy single instance | `providers.<driverKind>.binaryPath` | Hydrated into a default instance by T3 when no explicit one exists. This is what the audit proved live. |
+| Legacy single instance | `providers.<driverKind>.binaryPath` | Hydrated into a default instance by T3 when no explicit one exists. |
 | Explicit instance | `providerInstances.<driverKind>.config.binaryPath` | Wins over the legacy mirror; must be updated too or it would shadow the selection. |
 
 Driver kinds are not harness ids: Claude is `claudeAgent`, and Cursor's driver
@@ -96,9 +95,9 @@ node /opt/t3-provider/cli.mjs sync [--json]         # apply selections to T3
 node /opt/t3-provider/cli.mjs status                # manager facts as JSON
 ```
 
-`resolve` prints nothing and exits `3` when the harness is not runnable, so
-callers can fall back. Any other non-zero exit (`4` for a broken module or a
-missing manager, `2` for usage) means "no managed answer". `T3_HARNESS_MODULE`
+`resolve` prints nothing and exits `3` when the harness is not runnable. Any
+other non-zero exit (`4` for a broken module or a missing manager, `2` for
+usage) means "no managed answer". `T3_HARNESS_MODULE`
 overrides the baked `/opt/t3-harness/index.mjs` for tests.
 
 `sync` writes the JSON report to stdout with `--json`; without it, one summary
@@ -110,13 +109,13 @@ line (`applied claude,opencode; cleared none`) that the entrypoint logs.
   tool environment is sourced and before setup/serve. Success is logged; a
   missing module is a no-op and a failure only warns.
 - **`t3-login`:** resolves the managed executable for the requested harness and
-  runs the sign-in through it, falling back to the baked harness on PATH. It
-  uses `cursor-agent login` - `agent` is native-installer-only (and would
+  runs the sign-in through it. It uses `cursor-agent login` - `agent` is
+  native-installer-only (and would
   collide with Grok's aqua package).
 - **`t3-browser-mcp`:** each of Claude, Codex and OpenCode is registered
-  through its managed executable when one is runnable, and through the baked
-  harness otherwise. The script prints `(via <path>)` so the choice is visible,
-  and the container test asserts against it.
+  through its managed executable when one is runnable. The script prints
+  `(via <path>)` so the choice is visible, and the container test asserts
+  against it.
 
 Both shell helpers source `/etc/profile.d/t3-user-env.sh` after dropping to
 `t3`, so the resolver sees the same `MISE_*` paths the server does.
@@ -168,7 +167,7 @@ subprocess sees the image or project `PATH`; it does **not** get a transparent
 project toolchain. Project-declared runtimes are selected only on explicit
 `mise exec` / `mise run` paths (see
 [`project-execution.md`](./project-execution.md)). Document this rather than
-papering over it with PATH tricks: the plan's contract is a concrete absolute
+papering over it with PATH tricks: the integration contract is a concrete absolute
 executable per instance, and the harness is responsible for running mise itself
 if it needs a project runtime.
 

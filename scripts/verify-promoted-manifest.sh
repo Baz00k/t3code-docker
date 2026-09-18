@@ -18,7 +18,7 @@
 #   scripts/verify-promoted-manifest.sh \
 #     --expect linux/amd64=sha256:111... \
 #     --expect linux/arm64=sha256:222... \
-#     ghcr.io/you/t3code:core-candidate
+#     ghcr.io/you/t3code:core-staging
 #
 #   # A tag promoted from the tested digests in CI evidence:
 #   scripts/verify-promoted-manifest.sh \

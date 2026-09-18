@@ -13,7 +13,7 @@
 #
 # This is not mise's backend test suite: one representative version per
 # runtime, installed through an explicit mise boundary, on amd64 only. arm64
-# is built and published but not separately tested, per the plan.
+# is built and published but not separately tested.
 set -euo pipefail
 
 IMAGE="${1:-t3code:core}"

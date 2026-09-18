@@ -135,7 +135,6 @@ export T3_HARNESS_COMMAND="$command" T3_HARNESS_ARG="${1:-}"
       : h.failed ? `failed: ${h.failure ?? "unknown error"}`
       : h.runnable ? `runnable (${fmtAuth(h.authenticated)})`
       : h.installed ? "installed (not runnable)"
-      : h.bakedFallback?.present ? `not installed (baked fallback${h.bakedFallback.version ? " " + h.bakedFallback.version : ""})`
       : "not installed";
     return `${h.id}\t${version}\t${state}`;
   };
@@ -181,7 +180,7 @@ export T3_HARNESS_COMMAND="$command" T3_HARNESS_ARG="${1:-}"
     if (wantJson) process.stdout.write(JSON.stringify(body, null, 2) + "\n");
     else if (result?.ok) {
       const h = result.harness;
-      const where = h?.executable ?? (h?.bakedFallback?.present ? `baked fallback ${h.bakedFallback.executable}` : "no executable");
+      const where = h?.executable ?? "no executable";
       process.stdout.write(`${command} ${arg}: ok${h?.installedVersion ? ` (${h.installedVersion})` : ""} -> ${where}\n`);
       if (sync && sync.ok === false) process.stderr.write(`t3-harness: provider sync failed: ${sync.error}\n`);
     } else {

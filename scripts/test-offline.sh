@@ -11,7 +11,7 @@
 #   - cold cache (no provider file, fresh server): both endpoints answer 200
 #     in under five seconds; providers fall back to the bundled catalogue;
 #     harness facts carry installed/runnable state with auth unknown rather
-#     than failing, and no target claims a baked fallback;
+#     than failing;
 #   - warm cache (a seeded provider file, restarted server): /providers keeps
 #     serving the seeded catalogue with a disk source marker;
 #   - concurrent polls (five of each endpoint at once) all answer 200 in
@@ -174,10 +174,6 @@ is "cold /status lists five harnesses" "5" "$(field '.harnesses | length' "$stat
 has "cold /status reports harness freshness" '"harnessCache":' "$status_body"
 has "cold /status harness cache names its source" '"source":' "$status_body"
 has "cold /status keeps the degraded list" '"degraded":' "$status_body"
-for id in claude codex opencode grok cursor; do
-  is "cold $id reports no baked fallback in $VARIANT" "false" \
-    "$(field ".harnesses[] | select(.id == \"$id\") | .bakedFallback.present" "$status_body")"
-done
 has "cold /status keeps local pairing inspection" '"pairings":' "$status_body"
 has "cold /status keeps local session inspection" '"sessions":' "$status_body"
 

@@ -20,7 +20,6 @@
 #     another one;
 #   - Uninstall retracts the managed path from T3 and removes the executable
 #     without touching credentials, and the final images report no baked
-#     fallback;
 #   - on `browser`, `t3-browser-mcp` registers the MCP servers through the
 #     managed Claude, Codex and OpenCode, and Chromium drives a real page.
 #
@@ -301,7 +300,6 @@ is "the installer lists five harnesses" "5" "$(field '.harnesses | length' "$bas
 for id in $IDS; do
   facts="$(field ".harnesses[] | select(.id == \"$id\")" "$baseline")"
   is "$id starts uninstalled" "false" "$(field '.installed' "$facts")"
-  is "$id starts without a baked fallback in $VARIANT" "false" "$(field '.bakedFallback.present' "$facts")"
 done
 is "read-only status wrote no manager state" "absent" \
   "$(dex sh -c 'test -f /home/t3/.local/state/mise/harness-state.json && echo present || echo absent')"
@@ -501,8 +499,6 @@ uninstall_out="$(droot t3-harness uninstall opencode --json)"
 is "opencode uninstalls" "true" "$(field '.ok' "$uninstall_out")"
 is "opencode is no longer installed" "false" "$(field '.harness.installed' "$uninstall_out")"
 is "opencode no longer resolves an executable" "null" "$(field '.harness.executable // null' "$uninstall_out")"
-is "opencode reports no baked fallback in $VARIANT" "false" \
-  "$(field '.harness.bakedFallback.present' "$uninstall_out")"
 is "uninstall provider sync succeeded" "true" "$(field '.sync.ok' "$uninstall_out")"
 settings_after="$(settings_body)"
 is "opencode's managed path is retracted from T3 settings" "null" \
@@ -564,8 +560,6 @@ for id in claude codex grok cursor; do
 done
 opencode_facts="$(field '.harnesses[] | select(.id == "opencode")' "$offline_status")"
 is "opencode is still uninstalled offline" "false" "$(field '.installed' "$opencode_facts")"
-is "opencode reports no baked fallback offline" "false" \
-  "$(field '.bakedFallback.present' "$opencode_facts")"
 is "opencode credentials survived the offline recreate" "e2e-test-key" \
   "$(dex sh -c 'cat /home/t3/.local/share/opencode/auth.json' | jq -r '.anthropic.key')"
 for id in $IDS; do

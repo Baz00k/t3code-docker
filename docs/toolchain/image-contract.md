@@ -4,10 +4,7 @@
 `slim`/`full` targets are no longer built. This is the authoritative
 package contract for what the image contains and what it deliberately does not.
 
-The canonical product contract is
-[`TOOLCHAIN-MANAGEMENT-PLAN.md`](../../TOOLCHAIN-MANAGEMENT-PLAN.md). Migration
-from `slim`/`full` is in [`migration.md`](./migration.md); the pre-switch
-baseline is [`baseline.md`](./baseline.md).
+Migration from `slim`/`full` is in [`migration.md`](./migration.md).
 
 ## Target profiles
 
@@ -90,17 +87,15 @@ deno = "2"
 uv = "latest"
 ```
 
-Verified 2026-09-17 on `t3code:core` (native amd64, `mise 2026.9.10`):
-
-| Runtime | mise backend | Resolved | Probe |
-| --- | --- | --- | --- |
-| Node | `node` (core) | `22.23.2` | `node --version` + `node -e` |
-| Python | `python` (core, `python-build-standalone`) | `3.12.14` | `python --version` + `python -c` + file |
-| Go | `go` (core) | `1.27.1` | `go version` + `go run main.go` |
-| Rust | `rust` (core, via `rustup`) | `1.82.0` | `rustc --version`, `cargo --version`, `cargo clippy --version`, `cargo fmt --version`, `cargo clippy` + `cargo fmt` on a new crate |
-| Bun | `bun` (core) | `1.2.23` | `bun --version` |
-| Deno | `deno` (core) | `2.9.6` | `deno --version` |
-| uv | `uv` (aqua `astral-sh/uv`) | `0.12.15` | `uv --version` |
+| Runtime | mise backend | Probe |
+| --- | --- | --- |
+| Node | `node` (core) | `node --version` + `node -e` |
+| Python | `python` (core, `python-build-standalone`) | `python --version` + `python -c` + file |
+| Go | `go` (core) | `go version` + `go run main.go` |
+| Rust | `rust` (core, via `rustup`) | `rustc --version`, `cargo --version`, `cargo clippy --version`, `cargo fmt --version`, `cargo clippy` + `cargo fmt` on a new crate |
+| Bun | `bun` (core) | `bun --version` |
+| Deno | `deno` (core) | `deno --version` |
+| uv | `uv` (aqua `astral-sh/uv`) | `uv --version` |
 
 ```sh
 scripts/test-runtime-matrix.sh t3code:core    # 19 assertions, amd64 only
@@ -141,26 +136,24 @@ scripts/test-provider-integration.sh t3code:core t3code:browser
 
 ## Size evidence
 
-Measured 2026-09-18 on native amd64 via `scripts/measure-image.sh` during the
-final-target candidate rehearsal (source `d371bf6`, run
-[35321725906](https://github.com/Baz00k/t3code-docker/actions/runs/35321725906);
-compressed = gzipped `docker save`, unpacked = sum of uncompressed layers,
-startup = `docker run` to first `/.well-known/t3/environment`):
+Measured on native amd64 via `scripts/measure-image.sh`; compressed is a gzipped
+`docker save`, unpacked is the sum of uncompressed layers, and startup is
+`docker run` to the first `/.well-known/t3/environment` response:
 
-| Target | Compressed | Unpacked | Startup | Digest (native amd64, from the rehearsal) |
-| --- | ---: | ---: | ---: | --- |
-| `slim` (historical baseline, published `v0.4.5`) | 1.10 GiB | 2.94 GiB | ~3.2 s | — (see `baseline.md`) |
-| `full` (historical baseline, published `v0.4.5`) | 1.95 GiB | 5.19 GiB | ~3.2 s | — |
-| `core` | 0.69 GiB (745,217,028 B) | 2.03 GiB (2,179,749,376 B) | 3.66 s | `sha256:25671a93dce56f1f911efc760919ad77d112a62dc5f49ca4ad97825606bd8d72` |
-| `browser` | 0.97 GiB (1,043,181,614 B) | 2.63 GiB (2,825,801,216 B) | 3.65 s | `sha256:681f27401c4040570ce5b88f75d853f8b6c1d2fbe2e587e1e64a816715ea9c1f` |
+| Target | Compressed | Unpacked | Startup |
+| --- | ---: | ---: | ---: |
+| `slim` (historical baseline, published `v0.4.5`) | 1.10 GiB | 2.94 GiB | ~3.2 s |
+| `full` (historical baseline, published `v0.4.5`) | 1.95 GiB | 5.19 GiB | ~3.2 s |
+| `core` | 0.69 GiB (745,217,028 B) | 2.03 GiB (2,179,749,376 B) | 3.66 s |
+| `browser` | 0.97 GiB (1,043,181,614 B) | 2.63 GiB (2,825,801,216 B) | 3.65 s |
 
 `core` is ~36% smaller compressed than the historical `slim` while carrying
 the non-browser union; `browser` is ~50% smaller compressed than the historical
 `full` while carrying Chromium/fonts/MCP. Startup stays around 3-4 s on both.
-The publishable digests and delivery evidence are recorded in
+The release artifact identity and promotion contract are documented in
 [`ci-evidence.md`](./ci-evidence.md).
 
-Persistent installs (from the runtime matrix above, same run):
+Example persistent-install sizes from the same native amd64 measurement:
 
 | Location | Size |
 | --- | ---: |
@@ -180,7 +173,7 @@ scripts/measure-image.sh core browser
 in sync); harnesses and project/personal tools resolve exact versions at
 install time but are not offline artifact stores. The images must not be
 described as fully reproducible: the Node base tag, apt packages, and `gh`
-float, as recorded in [`baseline.md`](./baseline.md).
+float.
 
 ## Verification
 

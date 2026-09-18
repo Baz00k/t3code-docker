@@ -2,7 +2,7 @@
 //
 // One module owns the five supported harnesses: their exact-version install,
 // the global mise selection, the concrete executable path, and the facts
-// (configured, installed, runnable, authenticated, failed, baked fallback) the
+// (configured, installed, runnable, authenticated, failed) the
 // setup console and T3 integration read. Status and resolve are strictly
 // read-only. Install/Update/Uninstall run one at a time under a lock and record
 // the exact version they resolved.
@@ -67,7 +67,7 @@ export function createHarnessManager(options = {}) {
     return { tools: listing.tools ?? {}, saved, live, degraded };
   }
 
-  async function factsFor(entry, snap, { authenticate = true, probeBaked = false } = {}) {
+  async function factsFor(entry, snap, { authenticate = true } = {}) {
     const entries = snap.tools[entry.miseTool] ?? [];
     const sourceEntry = entries.find((candidate) => candidate.source) ?? null;
     const selected = entries.find((candidate) => candidate.active) ?? sourceEntry ?? entries[entries.length - 1] ?? null;
@@ -91,9 +91,7 @@ export function createHarnessManager(options = {}) {
     else if (belowMinimum) failure = `${installedVersion} is below the required ${entry.minimumVersion}`;
     const failed = Boolean(failure);
 
-    const baked = await bakedFacts(entry, { probeBaked });
-
-    const authExecutable = executableExists ? executable : baked.present ? baked.executable : null;
+    const authExecutable = executableExists ? executable : null;
     const authenticated =
       authenticate && authExecutable
         ? await authFor(entry, authExecutable, installedVersion ?? recordedVersion)
@@ -123,26 +121,8 @@ export function createHarnessManager(options = {}) {
       operationState: operation?.state ?? null,
       inProgress: Boolean(snap.live && snap.live.id === entry.id),
       managedVersions: record.managedVersions ?? [],
-      bakedFallback: baked,
       credentials: await credentialSurface(ctx, entry),
     };
-  }
-
-  async function bakedFacts(entry, { probeBaked }) {
-    let executable = null;
-    for (const candidate of entry.bakedFallbacks) {
-      if (await ctx.fs.exists(candidate)) {
-        executable = candidate;
-        break;
-      }
-    }
-    if (!executable) return { present: false, executable: null, version: null };
-    let version = null;
-    if (probeBaked) {
-      const probe = await probeVersion(ctx, entry, executable);
-      version = probe.ok ? probe.version : null;
-    }
-    return { present: true, executable, version };
   }
 
   async function authFor(entry, executable, version) {
@@ -271,8 +251,8 @@ export function createHarnessManager(options = {}) {
   }
 
   /**
-   * Remove the managed selection and every version the manager installed, and
-   * report - never hide - the credentials and baked fallback that remain.
+   * Remove the managed selection and every version the manager installed while
+   * preserving credentials.
    */
   async function uninstall(id) {
     return runOperation(id, "uninstall", async (entry, previous) => {

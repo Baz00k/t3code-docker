@@ -6,7 +6,7 @@
 # The unit under test is the catalogue's lifecycle against the pinned mise
 # release on a real amd64 host: exact-version install for all five harnesses,
 # read-only status and resolution, concurrency and interrupted-operation
-# recovery, credential-preserving uninstall with no baked fallback, and
+# recovery, credential-preserving uninstall, and
 # persistence across container recreation.
 #
 # The module is copied into the container so the test always exercises the
@@ -197,7 +197,6 @@ for id in claude codex opencode grok cursor; do
   is "$id is not configured" "false" "$(field '.configured' "$facts")"
   is "$id is not installed" "false" "$(field '.installed' "$facts")"
   is "$id does not appear runnable" "false" "$(field '.runnable' "$facts")"
-  is "$id reports no baked fallback" "false" "$(field '.bakedFallback.present' "$facts")"
   is "$id is not failed" "false" "$(field '.failed' "$facts")"
 done
 
@@ -292,13 +291,12 @@ auth_out="$(driver authenticated opencode)"
 is "opencode is reported authenticated from its credential file" "true" "$(field '.authenticated' "$auth_out")"
 
 # --- credential-preserving uninstall -----------------------------------------
-section "Uninstall preserves credentials and reports no fallback"
+section "Uninstall preserves credentials"
 uninstall_out="$(driver uninstall opencode)"
 is "uninstall succeeds" "true" "$(field '.ok' "$uninstall_out")"
 is "the harness is no longer configured" "false" "$(field '.harness.configured' "$uninstall_out")"
 is "the harness is no longer installed" "false" "$(field '.harness.installed' "$uninstall_out")"
 is "the managed executable is gone" "null" "$(field '.harness.executable' "$uninstall_out")"
-is "no baked fallback remains" "false" "$(field '.harness.bakedFallback.present' "$uninstall_out")"
 is "the credential surface is reported" "true" "$(field '.harness.credentials.present' "$uninstall_out")"
 is "credentials were preserved" "k" \
   "$(dex sh -c "cat $CRED_FILE" | jq -r '.anthropic.key')"

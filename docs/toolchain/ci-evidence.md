@@ -6,11 +6,8 @@ amd64 members are proven by the capability checks (including the final-target
 E2E), and a release tag can only be promoted from the exact digests that were
 built and tested. Nothing is rebuilt between testing and tagging.
 
-The canonical product contract is
-[`TOOLCHAIN-MANAGEMENT-PLAN.md`](../../TOOLCHAIN-MANAGEMENT-PLAN.md); target
-profiles and measured sizes are in
-[`image-contract.md`](./image-contract.md); the baseline this evidence is
-compared against is in [`baseline.md`](./baseline.md).
+Target profiles and measured sizes are in
+[`image-contract.md`](./image-contract.md).
 
 ## The Promotion Rule
 
@@ -44,9 +41,8 @@ hardware.
 
 Smoke's final assertion is that the pins were current at build time. That is a
 source-hygiene check, not an artifact property, and the release `versions` job
-reports drift informationally. The release path runs smoke without a waiver, so
-its evidence records `pinFreshness: "asserted"`. T3 0.0.42's platform-package
-migration restored a clean pin and removed the temporary rehearsal exception.
+reports drift informationally. The release path runs the strict smoke check and
+cannot publish while it fails.
 
 ## Workflows
 
@@ -80,31 +76,31 @@ The tag path additionally gates on the assembled product and reports size:
   infrastructure, and, on `browser`, managed MCP registration driving real
   pages. A failure prevents the evidence artifact `merge` needs.
 - **Measurement** (`scripts/measure-image.sh --no-build`) records compressed
-  size, unpacked size and startup from the pulled digest, and the run summary
-  reports each final target against the published transitional baseline
-  (`core` vs `slim`, `browser` vs `full`). Reporting is informational; the E2E
-  and smoke are the gates.
+  size, unpacked size and startup from the pulled digest in the run summary.
+  Reporting is informational; the E2E and smoke are the gates.
 
 `lint` (shellcheck + `docker compose config`) and `versions`
 (`bump-versions.sh --check`, informational) are unchanged.
 
 ## Capability Matrix
 
-Checks are selected by declared capability, never inferred from a binary or a
-tag. `--variant` is passed explicitly for the scripts that select profiles.
+The repository provides the following verification coverage. Release CI runs
+smoke, the final-target E2E, and measurement against the exact amd64 digest;
+the focused scripts remain available for local diagnosis and targeted changes.
+`--variant` is passed explicitly wherever a script selects a profile.
 
-| Capability | Script | `core` | `browser` |
-| --- | --- | :---: | :---: |
-| Infrastructure isolation | `test-infrastructure.sh` | yes | yes |
-| Mise contract | `test-mise.sh` | yes | yes |
-| Ownership migration | `test-ownership.sh` | yes | yes |
-| Harness lifecycle | `test-harness-manager.sh`, `test-harness-surfaces.sh` | yes | yes |
-| Offline setup status | `test-offline.sh --variant` | yes | yes |
-| Runtime matrix via mise | `test-runtime-matrix.sh` | yes | yes |
-| Image inventory | `test-image-inventory.sh --variant` | yes | yes |
-| Smoke (`--variant`, exact reference) | `smoke-test.sh` | yes | yes |
-| Final-target E2E | `test-toolchain-e2e.sh --variant` | yes | yes |
-| Measurement | `measure-image.sh` | yes | yes |
+| Capability | Script | Release CI |
+| --- | --- | :---: |
+| Infrastructure isolation | `test-infrastructure.sh` | focused local check |
+| Mise contract | `test-mise.sh` | focused local check |
+| Ownership migration | `test-ownership.sh` | focused local check |
+| Harness lifecycle | `test-harness-manager.sh`, `test-harness-surfaces.sh` | via E2E |
+| Offline setup status | `test-offline.sh --variant` | via E2E |
+| Runtime matrix via mise | `test-runtime-matrix.sh` | via E2E |
+| Image inventory | `test-image-inventory.sh --variant` | via smoke |
+| Smoke (`--variant`, exact reference) | `smoke-test.sh` | yes |
+| Final-target E2E | `test-toolchain-e2e.sh --variant` | release tags |
+| Measurement | `measure-image.sh` | release tags |
 
 Notes:
 
@@ -137,9 +133,7 @@ Evidence record shape:
   "ref": "ghcr.io/you/t3code@sha256:...",
   "indexRef": "ghcr.io/you/t3code@sha256:...",
   "tested": true,
-  "checks": ["infrastructure", "mise", "ownership", "harness", "offline", "runtime", "inventory", "smoke", "measure", "e2e"],
   "size": { "compressed_bytes": 0, "unpacked_bytes": 0, "startup_seconds": 0.0 },
-  "pinFreshness": "asserted",
   "sourceSha": "...",
   "runUrl": "https://github.com/.../actions/runs/..."
 }
@@ -154,71 +148,21 @@ artifact exists.
 
 ## Promotion Gate Verification
 
-Before delivery, the gate was exercised in the fork with an injected amd64
-smoke failure. The test job wrote no tested evidence, so promotion was skipped.
-The fork-only rehearsal workflow used for that proof was removed after delivery
-and is not part of the upstream maintenance surface.
+The workflow structure makes promotion depend on tested evidence: a failed
+amd64 check leaves no promotable record, so the merge job cannot assign release
+tags.
 
 The script-level gate is exercised the same way in CI and locally:
 
 ```sh
 # A wrong digest fails:
 scripts/verify-promoted-manifest.sh \
-  --expect linux/amd64=sha256:0000... ghcr.io/you/t3code:core-candidate
+  --expect linux/amd64=sha256:0000... ghcr.io/you/t3code:core-staging
 # Promotion verification failed (exit 1)
 
 # A missing platform fails:
-scripts/verify-promoted-manifest.sh --platforms linux/amd64 ghcr.io/you/t3code:core-candidate
+scripts/verify-promoted-manifest.sh --platforms linux/amd64 ghcr.io/you/t3code:core-staging
 ```
-
-## Recorded Delivery Evidence
-
-Final-target rehearsal, 2026-09-18, source
-`d371bf6ade0f1f8b45c8e4d94bca82859701462e`
-(run [35321725906](https://github.com/Baz00k/t3code-docker/actions/runs/35321725906)):
-`core` and `browser` built for amd64 and arm64, both native amd64 test jobs
-passed every capability (including the harness lifecycle checks and the E2E),
-and both candidate manifests were promoted from the tested digests and
-member-verified inside the run. `scripts/verify-promoted-manifest.sh` was
-re-run independently from a checkout against the same tags and passed.
-Candidate tags get overwritten by later rehearsals; the digests below are the
-record.
-
-| Target | amd64 member (tested, E2E) | arm64 member (built) | Promoted candidate index digest |
-| --- | --- | --- | --- |
-| `core` | `sha256:25671a93dce56f1f911efc760919ad77d112a62dc5f49ca4ad97825606bd8d72` | `sha256:91f55d912a22f1433500e17c9657aaf223d73ca4ff507338ec678825a0ad8cb2` | `sha256:5f2142b7ea97d42f11aae3206088016d2eb4f918f29d2f126fbc989ac2480e60` |
-| `browser` | `sha256:681f27401c4040570ce5b88f75d853f8b6c1d2fbe2e587e1e64a816715ea9c1f` | `sha256:e718b2bb6067ec2014b59441b8ca91c26f3309614afc79f742f27587b65eb088` | `sha256:0a2d6f05e84555902dd9e2eae0f416fcb86dffbbed3dd60152b8a6397c08969f` |
-
-Measured from the pulled amd64 digests (startup is the first healthy response):
-
-| Target | Compressed | Unpacked | Startup | Checks |
-| --- | ---: | ---: | ---: | --- |
-| `core` | 0.69 GiB (745,217,028 B) | 2.03 GiB (2,179,749,376 B) | 3.66 s | infrastructure, mise, ownership, harness, offline, runtime, inventory, smoke, measure, e2e |
-| `browser` | 0.97 GiB (1,043,181,614 B) | 2.63 GiB (2,825,801,216 B) | 3.65 s | infrastructure, mise, ownership, harness, offline, runtime, inventory, smoke, measure, e2e |
-
-Both records are `tested: true`. That rehearsal predated the T3 0.0.42
-distribution migration and temporarily recorded `pinFreshness: "waived"`; the
-release workflow now runs strict smoke checks and records
-`pinFreshness: "asserted"`. The local dry runs at the same source passed 147/0
-checks on `core` and 156/0 on `browser`.
-
-Historical transitional rehearsal, 2026-09-17, source `2fec568`
-(run [35256458619](https://github.com/Baz00k/t3code-docker/actions/runs/35256458619)):
-all four targets built for amd64 and arm64 and passed their capability checks;
-the `slim`/`full` digests below are the last transitional artifacts this
-repository built and promoted, and remain useful as rollback references.
-
-| Target | amd64 member | arm64 member | Promoted index digest |
-| --- | --- | --- | --- |
-| `slim` | `sha256:3a2ac5c41daa64d3d388b0bdd378ce3960bac1f7f44bd692fe34e8d939134599` | `sha256:87b251626dfa00338ff52161f4d6692bab22073a5a7e099329e318c32f8d4c5a` | `sha256:d3323ebe43eedb1670b6a21558f736e25e25f913adb5d58f9cf7fdbc60dd6b67` |
-| `full` | `sha256:74f7109e6aa45ad24dc589a32dc16619300e165d7b435e4b04123b93d7b93d67` | `sha256:1ec6a15f85e0fb94b6679f4722a90e4d3eecf2c09d289632038d127e99f5e332` | `sha256:9ae6fad2dedb85cfd0f56692c8934a5feecaccbf9caed35de86f66c761e6b855` |
-
-Failing-candidate rehearsal, 2026-09-17
-(run [35256467044](https://github.com/Baz00k/t3code-docker/actions/runs/35256467044),
-scratch branch `tm/11-failure-rehearsal` at `de6aadf`): `core` built for both
-architectures, the amd64 smoke step failed on the injected defect, `promote` was
-skipped because a test job failed, and the run produced build evidence only - no
-`candidate-tested-core`, no `candidate-evidence`, no candidate manifest.
 
 ## Unavailable Checks
 
@@ -242,26 +186,21 @@ scripts/test-image-inventory.sh --variant core t3code:core
 scripts/smoke-test.sh --variant core t3code:core
 scripts/test-toolchain-e2e.sh --variant core t3code:core
 
-# Verify a promoted (or candidate) manifest against known digests:
+# Verify a staged manifest against known digests:
 scripts/verify-promoted-manifest.sh \
   --expect linux/amd64=sha256:... --expect linux/arm64=sha256:... \
-  ghcr.io/you/t3code:core-candidate
+  ghcr.io/you/t3code:core-staging
 
 # Rehearse promotion locally from two pushed indexes (provenance included):
 docker run -d -p 127.0.0.1:5005:5000 registry:2
-docker buildx imagetools create -t localhost:5005/t3code:core-candidate \
+docker buildx imagetools create -t localhost:5005/t3code:core-staging \
   ghcr.io/you/t3code@sha256:<amd64-index> ghcr.io/you/t3code@sha256:<arm64-index>
 scripts/verify-promoted-manifest.sh \
   --expect linux/amd64=<amd64-platform-manifest> \
   --expect linux/arm64=<arm64-platform-manifest> \
-  localhost:5005/t3code:core-candidate
+  localhost:5005/t3code:core-staging
 ```
 
-`actionlint` and `docker compose config` are the workflow linters used to
-verify this ticket. CI's `lint` job runs `bash -n`, shellcheck, and
-`docker compose config`; actionlint is run manually with the same image:
-
-```sh
-docker run --rm -v "$PWD:/repo" -w /repo rhysd/actionlint:latest
-docker compose config >/dev/null
-```
+CI's lint job runs shell parsing, ShellCheck, the Node unit suites, the harness
+surface audit, the generated mise configuration check, and
+`docker compose config`.

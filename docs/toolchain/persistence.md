@@ -6,9 +6,7 @@ durability. This note records how UID/GID migration survives interruption, how
 `t3-doctor` reports what is actually mounted, and where the boundary between
 "observed" and "guaranteed" persistence sits.
 
-The canonical product contract is
-[`TOOLCHAIN-MANAGEMENT-PLAN.md`](../../TOOLCHAIN-MANAGEMENT-PLAN.md). The
-mise paths it reports are defined in
+The mise paths reported here are defined in
 [`project-execution.md`](./project-execution.md); the immutable T3 paths are in
 [`infrastructure.md`](./infrastructure.md).
 
@@ -172,7 +170,7 @@ with the marker and its format inspected and the retry completed; a `PUID`/`PGID
 remap with the marker written before the account change; a direct state mount;
 an external `T3CODE_HOME`; workspace non-recursion; and `t3-doctor` reporting
 the mise fields, the observed mounts, the state-only warning, and no root-owned
-state. Verification is amd64-only, per the plan.
+state. Verification is amd64-only.
 
 Managed harnesses are tools under `$MISE_DATA_DIR`, so they survive recreation
 and appear in `t3-doctor`'s installed-tool report. Mount verdicts are local,

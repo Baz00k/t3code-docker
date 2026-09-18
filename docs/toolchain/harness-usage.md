@@ -15,9 +15,8 @@ scripts/test-harness-surfaces.sh t3code:core                  # container assert
 ```
 
 The manager API is in [`harness-api.md`](./harness-api.md); the T3 seam is in
-[`provider-integration.md`](./provider-integration.md); the offline budgets
-are in [`offline.md`](./offline.md). The canonical product contract
-is [`TOOLCHAIN-MANAGEMENT-PLAN.md`](../../TOOLCHAIN-MANAGEMENT-PLAN.md).
+[`provider-integration.md`](./provider-integration.md); the offline budgets are
+in [`offline.md`](./offline.md).
 
 ## Routes
 
@@ -66,7 +65,6 @@ manager's facts plus the sign-in affordances the card needs:
   "operationState": "ok",
   "inProgress": false,
   "managedVersions": ["2.1.270"],
-  "bakedFallback": { "present": false, "executable": "/opt/npm-global/bin/claude", "version": null },
   "credentialsPresent": false,
   "canSignIn": true,
   "canSetKey": false,
@@ -76,9 +74,7 @@ manager's facts plus the sign-in affordances the card needs:
 
 `version` is `installedVersion ?? recordedVersion ?? null`: the exact version
 the card shows. `signedIn` is `true`, `false`, or `null` (not readable) from
-the manager's bounded probe of the managed executable. `bakedFallback` reports
-the historical baked binary; the final images ship none, so it is always
-`present: false` and Uninstall never has to claim a fallback. `operation`/
+the manager's bounded probe of the managed executable. `operation`/
 `operationState`/`inProgress` describe the last or live operation;
 `failed`/`failure` carry the interrupted, failed, or below-minimum reason.
 

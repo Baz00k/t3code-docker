@@ -14,14 +14,6 @@ on:
 env:
   REGISTRY: ghcr.io
   IMAGE: ${{ github.repository }}
-  # Published `v0.4.5` transitional baselines, pulled (compressed / unpacked).
-  # Release runs report the final targets against these so the product switch's
-  # size impact is visible without recomposing the old targets.
-  # See docs/toolchain/baseline.md.
-  BASELINE_SLIM_COMPRESSED: "1175874628"
-  BASELINE_SLIM_UNPACKED: "3156061184"
-  BASELINE_FULL_COMPRESSED: "2097056511"
-  BASELINE_FULL_UNPACKED: "5571555840"
 
 jobs:
   lint:
@@ -36,6 +28,9 @@ jobs:
             shellcheck -S warning "$f"
           done
           bash tests/image-profile.test.sh
+          node --test tests/*.test.mjs
+          node scripts/harness-ui-audit.js
+          scripts/generate-mise-idiomatic.sh --check
       - name: Compose file is valid
         run: docker compose config >/dev/null
 
@@ -64,8 +59,8 @@ jobs:
           } >> "$GITHUB_STEP_SUMMARY"
 
   # Every target builds for both architectures on its own native runner. Only
-  # amd64 is smoke-tested: arm64 members are built and digest-mapped, and the
-  # plan accepts that they behave analogously (see docs/toolchain/ci-evidence.md).
+  # amd64 is smoke-tested; arm64 members are built and digest-mapped but are not
+  # separately smoke-tested (see docs/toolchain/ci-evidence.md).
   #
   # On a release tag both final targets push by digest, and `merge` stitches the
   # tested digests into the release tags. Nothing is rebuilt between test and
@@ -189,8 +184,7 @@ jobs:
             "${REGISTRY}/${{ steps.image.outputs.slug }}@${PLATFORM_DIGEST}"
 
       # Measured from the pulled digest, so the size and startup timing belong
-      # to the exact artifact under test. The release summary compares both
-      # final targets against the published transitional baselines.
+      # to the exact artifact under test.
       - name: Measure the tested artifact (native amd64, release only)
         if: github.ref_type == 'tag' && matrix.platform == 'amd64'
         env:
@@ -204,28 +198,17 @@ jobs:
           scripts/measure-image.sh --no-build --json "$VARIANT" \
             > "/tmp/evidence/measure-${VARIANT}.json"
 
-      # Reports size changes against the old `slim` (core) and `full` (browser)
-      # baselines; it does not gate the release on a threshold, but the numbers
-      # must be visible in the run that publishes them.
-      - name: Report size against the transitional baselines
+      - name: Report artifact size
         if: github.ref_type == 'tag' && matrix.platform == 'amd64'
         env:
           VARIANT: ${{ matrix.target }}
         run: |
           set -euo pipefail
-          base_name=""; base_c=0; base_u=0
-          if [ "$VARIANT" = core ]; then
-            base_name="slim"; base_c="$BASELINE_SLIM_COMPRESSED"; base_u="$BASELINE_SLIM_UNPACKED"
-          else
-            base_name="full"; base_c="$BASELINE_FULL_COMPRESSED"; base_u="$BASELINE_FULL_UNPACKED"
-          fi
-          jq -r --arg base "$base_name" --argjson bc "$base_c" --argjson bu "$base_u" '
+          jq -r '
             .[0] |
             "### Size: `\(.target)`\n\n" +
             "| Artifact | Compressed | Unpacked | Startup |\n| --- | ---: | ---: | ---: |\n" +
-            "| `\(.target)` (new) | \(.compressed_bytes) B | \(.unpacked_bytes) B | \(.startup_seconds) s |\n" +
-            "| `\($base)` (old baseline) | \($bc) B | \($bu) B | — |\n" +
-            "| Delta | \((.compressed_bytes - $bc) / $bc * 100 | . * 10 | round / 10)% | \((.unpacked_bytes - $bu) / $bu * 100 | . * 10 | round / 10)% | — |"' \
+            "| `\(.target)` | \(.compressed_bytes) B | \(.unpacked_bytes) B | \(.startup_seconds) s |"' \
             "/tmp/evidence/measure-${VARIANT}.json" >> "$GITHUB_STEP_SUMMARY"
 
       # The evidence artifact is written only after the smoke test and E2E above

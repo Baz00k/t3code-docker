@@ -7,9 +7,7 @@ environment. This note records the pin and its provenance, the persistent paths
 and activation interface, the execution policy, the generated idiomatic
 allowlist, and the limits of the "install or fail" promise.
 
-The canonical product contract is
-[`TOOLCHAIN-MANAGEMENT-PLAN.md`](../../TOOLCHAIN-MANAGEMENT-PLAN.md). The
-immutable infrastructure it builds on is
+The immutable infrastructure this builds on is
 [`infrastructure.md`](./infrastructure.md).
 
 ## Pinned release
@@ -177,7 +175,7 @@ isolation; the user paths, shims, interactive activation, and server
 environment; idiomatic detection across representative files and `package.json`;
 detector overrides; explicit-config precedence; `mise exec`, `mise run`, and
 auto-install; malformed and impossible versions; the shim fallback setting; and
-cached execution offline. Verification is amd64-only, per the plan; arm64 is
+cached execution offline. Verification is amd64-only; arm64 is
 built and published but not separately smoked.
 
 `t3-doctor` reports these mise paths, and the trust store lives in the state

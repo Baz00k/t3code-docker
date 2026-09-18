@@ -207,8 +207,7 @@ const stableAuth = (id, value) => {
 // The Agents card shape. `installed`/`signedIn` keep their historical names
 // so older clients keep working; the managed facts alongside them are what
 // the card actually renders: exact versions, runnable state, the operation in
-// flight, the failure that stopped the last one, and the baked fallback that
-// remains after an Uninstall. Auth comes from the manager's bounded probe of
+// flight, and the failure that stopped the last one. Auth comes from the manager's bounded probe of
 // the managed executable - never from a PATH search.
 const toPublicHarness = (facts) => ({
   id: facts.id,
@@ -232,7 +231,6 @@ const toPublicHarness = (facts) => ({
   operationState: facts.operationState,
   inProgress: facts.inProgress,
   managedVersions: facts.managedVersions ?? [],
-  bakedFallback: facts.bakedFallback,
   credentialsPresent: facts.credentials?.present ?? false,
   canSignIn: Boolean(AGENTS[facts.id]?.signin),
   canSetKey: Boolean(AGENTS[facts.id]?.apiKey),
@@ -292,8 +290,7 @@ const harnessStatus = async (options = {}) => {
   return snap.harnesses;
 };
 
-// The absolute managed executable when one is runnable, else the baked
-// baked fallback when present in an older image, else null. Sign-in and the API-key
+// The absolute managed executable when one is runnable, else null. Sign-in and the API-key
 // stdin flow run through this, so credentials land where the executable T3
 // launches reads them.
 const managedExecutable = async (id) => {
@@ -301,10 +298,7 @@ const managedExecutable = async (id) => {
     const harness = await loadHarness();
     const facts = await harness.resolve(id, { authenticate: false });
     if (facts?.runnable && facts?.executable) return facts.executable;
-    if (facts?.bakedFallback?.present && facts?.bakedFallback?.executable) {
-      return facts.bakedFallback.executable;
-    }
-  } catch { /* fall through to the PATH fallback */ }
+  } catch { /* no managed executable */ }
   return null;
 };
 
@@ -574,12 +568,12 @@ const startSignin = async (agentId) => {
   const { argv: baseArgv, pty, env, expectsCode } = agent.signin;
 
   // Run the sign-in through the managed executable when one is runnable, so
-  // credentials land where the harness T3 launches reads them. Otherwise fall
-  // back to a baked harness on PATH when an older image supplies one.
+  // credentials land where the harness T3 launches reads them.
   // argv stays fixed per agent - only the binary is resolved, never built from
   // request input - so the shell that `script` needs cannot be steered.
   const managed = await managedExecutable(agentId);
-  const argv = managed ? [managed, ...baseArgv.slice(1)] : [...baseArgv];
+  if (!managed) throw new Error(`${agentId} is not installed`);
+  const argv = [managed, ...baseArgv.slice(1)];
   const [cmd, args] = pty
     ? ["script", ["-qec", argv.map(shellQuote).join(" "), "/dev/null"]]
     : [argv[0], argv.slice(1)];
@@ -703,9 +697,8 @@ const setApiKey = async (agentId, key, providerId) => {
 
   if (agent.apiKey.kind === "stdin") {
     const managed = await managedExecutable(agentId);
-    const [bin, ...rest] = managed
-      ? [managed, ...agent.apiKey.argv.slice(1)]
-      : agent.apiKey.argv;
+    if (!managed) throw new Error(`${agentId} is not installed`);
+    const [bin, ...rest] = [managed, ...agent.apiKey.argv.slice(1)];
     await new Promise((resolve, reject) => {
       const child = spawn(bin, rest, {
         env: process.env, stdio: ["pipe", "pipe", "pipe"],

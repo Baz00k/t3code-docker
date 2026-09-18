@@ -10,10 +10,10 @@
 #
 #   - unauthenticated lifecycle reads and mutations are rejected (401);
 #   - GET /harnesses and /status expose the same five managed facts the CLI
-#     reports: exact versions, runnable state, failures, and no baked fallback;
+#     reports exact versions, runnable state, and failures;
 #   - read-only polling changes no mise selection, config, or manager state;
 #   - explicit-version install/update via UI and CLI agree, and uninstall
-#     preserves credentials while reporting no baked fallback;
+#     preserves credentials;
 #   - a concurrent operation is refused with busy/409 on both surfaces;
 #   - prefixed routes (/__setup/...) answer the same JSON;
 #   - the CLI works as root (dropping to t3) and leaves t3-owned state.
@@ -156,16 +156,12 @@ for id in claude codex opencode grok cursor; do
   has "$id exposes runnable state" '"runnable":' "$one"
   has "$id exposes exact versions" '"installedVersion":' "$one"
   has "$id exposes failure state" '"failed":' "$one"
-  has "$id exposes fallback state" '"bakedFallback":' "$one"
   has "$id exposes sign-in actions" '"canSignIn":' "$one"
 done
 status_body="$(api GET /status)"
 is "status carries five harnesses" "5" "$(field '.harnesses | length' "$status_body")"
 has "status harnesses carry runnable state" '"runnable":' "$status_body"
-has "status harnesses carry fallback state" '"bakedFallback":' "$status_body"
 for id in claude codex opencode grok cursor; do
-  is "$id reports no baked fallback" "false" \
-    "$(field ".harnesses[] | select(.id == \"$id\") | .bakedFallback.present" "$harnesses")"
   is "$id starts unmanaged" "false" \
     "$(field ".harnesses[] | select(.id == \"$id\") | .installed" "$harnesses")"
 done
@@ -216,8 +212,6 @@ dex sh -c 'mkdir -p /home/t3/.local/share/opencode && printf "%s" "{\"anthropic\
 ui_uninstall="$(api POST /harnesses/uninstall '{"id":"opencode"}')"
 is "UI uninstall reports ok" "true" "$(field '.ok' "$ui_uninstall")"
 is "the harness is no longer installed" "false" "$(field '.harness.installed' "$ui_uninstall")"
-is "no baked fallback remains" "false" \
-  "$(field '.harness.bakedFallback.present' "$ui_uninstall")"
 is "credentials were preserved" "surfaces-key" \
   "$(dex sh -c 'cat /home/t3/.local/share/opencode/auth.json' | jq -r '.anthropic.key')"
 cli_status="$(cli_json status opencode)"

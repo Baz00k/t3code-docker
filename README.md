@@ -594,9 +594,12 @@ does) and keep `--no-sandbox`, which `t3-browser-mcp` passes.
 
 ## Design notes
 
-[`PLAN.md`](PLAN.md) records the research this is built on: what was verified
-against the upstream source, what the container has to work around, and why the
-pieces are shaped the way they are.
+The durable architecture and maintenance contracts live in
+[`docs/toolchain/`](docs/toolchain/): start with
+[`image-contract.md`](docs/toolchain/image-contract.md),
+[`project-execution.md`](docs/toolchain/project-execution.md), and
+[`provider-contract.md`](docs/toolchain/provider-contract.md). `PLAN.md` remains
+the original image research record.
 
 ## Contributing
 

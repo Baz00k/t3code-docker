@@ -34,7 +34,6 @@ export const CATALOGUE = Object.freeze([
     minimumVersion: null,
     // Both release assets exist for x64 and arm64.
     architectures: ["x64", "arm64"],
-    bakedFallbacks: ["/opt/npm-global/bin/claude"],
     credentials: {
       env: ["ANTHROPIC_API_KEY", "CLAUDE_CODE_OAUTH_TOKEN"],
       paths: [".claude/.credentials.json"],
@@ -50,7 +49,6 @@ export const CATALOGUE = Object.freeze([
     versionPattern: "(\\d+\\.\\d+\\.\\d+)",
     minimumVersion: null,
     architectures: ["x64", "arm64"],
-    bakedFallbacks: ["/opt/npm-global/bin/codex"],
     credentials: {
       env: [],
       paths: [".codex/auth.json"],
@@ -66,7 +64,6 @@ export const CATALOGUE = Object.freeze([
     versionPattern: "(\\d+\\.\\d+\\.\\d+)",
     minimumVersion: MINIMUM_OPENCODE_VERSION,
     architectures: ["x64", "arm64"],
-    bakedFallbacks: ["/opt/npm-global/bin/opencode"],
     credentials: {
       env: [],
       paths: [".local/share/opencode/auth.json"],
@@ -82,7 +79,6 @@ export const CATALOGUE = Object.freeze([
     versionPattern: "(\\d+\\.\\d+\\.\\d+)",
     minimumVersion: null,
     architectures: ["x64", "arm64"],
-    bakedFallbacks: ["/opt/npm-global/bin/grok"],
     credentials: {
       env: ["XAI_API_KEY"],
       paths: [".grok/auth.json"],
@@ -99,7 +95,6 @@ export const CATALOGUE = Object.freeze([
     versionPattern: "(\\d{4}\\.\\d{2}\\.\\d{2}-[0-9a-f]+)",
     minimumVersion: null,
     architectures: ["x64", "arm64"],
-    bakedFallbacks: ["/opt/cursor/.local/bin/cursor-agent"],
     credentials: {
       env: [],
       paths: [".cursor/cli-config.json"],

@@ -7,9 +7,8 @@ the paths, the one launcher every
 administrative call goes through, the mutable npm prefix, and where user
 initialization belongs.
 
-The canonical product contract is
-[`TOOLCHAIN-MANAGEMENT-PLAN.md`](../../TOOLCHAIN-MANAGEMENT-PLAN.md). The
-provider matrix is
+The image contract is [`image-contract.md`](./image-contract.md). The provider
+matrix is
 [`provider-contract.md`](./provider-contract.md).
 
 ## Paths

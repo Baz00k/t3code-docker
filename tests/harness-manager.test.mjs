@@ -20,14 +20,6 @@ import {
 const HOME = "/home/t3";
 const DATA_DIR = path.join(HOME, ".local/share/mise");
 const STATE_DIR = path.join(HOME, ".local/state/mise");
-const BAKED = {
-  claude: "/opt/npm-global/bin/claude",
-  codex: "/opt/npm-global/bin/codex",
-  opencode: "/opt/npm-global/bin/opencode",
-  grok: "/opt/npm-global/bin/grok",
-  cursor: "/opt/cursor/.local/bin/cursor-agent",
-};
-
 /** Minimal async filesystem with the semantics the manager relies on. */
 class MemoryFs {
   constructor() {
@@ -243,8 +235,6 @@ test("status on a fresh home reports nothing managed and no side effects", async
   const fs = new MemoryFs();
   const world = createWorld(fs);
   const manager = managerFor(world);
-  fs.seedFile(BAKED.claude, "", 0o755);
-  fs.seedFile(BAKED.grok, "", 0o755);
   fs.seedFile(path.join(HOME, ".local/share/opencode/auth.json"), "{}");
 
   const before = fs.snapshot();
@@ -257,9 +247,6 @@ test("status on a fresh home reports nothing managed and no side effects", async
     assert.equal(harness.runnable, false, `${harness.id} not runnable`);
     assert.equal(harness.failed, false, `${harness.id} not failed`);
   }
-  assert.equal(byId(harnesses, "claude").bakedFallback.present, true);
-  assert.equal(byId(harnesses, "claude").bakedFallback.executable, BAKED.claude);
-  assert.equal(byId(harnesses, "codex").bakedFallback.present, false);
   assert.equal(byId(harnesses, "opencode").credentials.present, true);
   assert.equal(fs.snapshot(), before, "status did not write anything");
   assert.equal(world.calls.some((call) => /use|uninstall|unuse/.test(call)), false, "status ran no mutation");
@@ -464,13 +451,12 @@ test("status never reports runnable while a previous install is still in progres
   assert.equal(harness.inProgress, true);
 });
 
-test("uninstall preserves credentials, reports baked fallback, and clears managed state", async () => {
+test("uninstall preserves credentials and clears managed state", async () => {
   const fs = new MemoryFs();
   const world = createWorld(fs);
   const manager = managerFor(world);
   const authFile = path.join(HOME, ".local/share/opencode/auth.json");
   fs.seedFile(authFile, '{"anthropic":{"type":"api","key":"secret"}}');
-  fs.seedFile(BAKED.opencode, "", 0o755);
 
   await manager.install("opencode", { version: "1.18.31" });
   const result = await manager.uninstall("opencode");
@@ -479,8 +465,6 @@ test("uninstall preserves credentials, reports baked fallback, and clears manage
   assert.equal(result.harness.installed, false);
   assert.equal(result.harness.configured, false);
   assert.equal(result.harness.executable, null);
-  assert.equal(result.harness.bakedFallback.present, true);
-  assert.equal(result.harness.bakedFallback.executable, BAKED.opencode);
   assert.equal(result.harness.credentials.present, true);
   assert.equal(await fs.exists(authFile), true, "credentials were not touched");
   assert.deepEqual(result.harness.managedVersions, []);

@@ -2,8 +2,7 @@
 
 This is the durable integration contract between T3 Code, the harness manager,
 and the five supported providers. It records the conclusions that implementation
-and regression tests depend on; the one-off source audit and reproduction script
-used during development are intentionally not shipped.
+and regression tests depend on.
 
 The concrete settings writer is documented in
 [`provider-integration.md`](./provider-integration.md), and lifecycle behavior is

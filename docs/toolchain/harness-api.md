@@ -14,15 +14,14 @@ scripts/test-harness-manager.sh t3code:core         # 125 container assertions
 ```
 
 The provider facts behind the catalogue are in
-[`provider-contract.md`](./provider-contract.md); the mise storage and policy are in
-[`project-execution.md`](./project-execution.md). The canonical product
-contract is [`TOOLCHAIN-MANAGEMENT-PLAN.md`](../../TOOLCHAIN-MANAGEMENT-PLAN.md).
+[`provider-contract.md`](./provider-contract.md); the mise storage and policy are
+in [`project-execution.md`](./project-execution.md).
 
 ## Module layout
 
 | File | Responsibility |
 | --- | --- |
-| `docker/harness/catalogue.mjs` | The five entries: mise tool, executable layout, architectures, minimum version, credential surface, baked fallback, auth kind. |
+| `docker/harness/catalogue.mjs` | The five entries: mise tool, executable layout, architectures, minimum version, credential surface, auth kind. |
 | `docker/harness/manager.mjs` | Public manager: `status`, `resolve`, `install`, `update`, `uninstall`. Owns the state machine and the lock. |
 | `docker/harness/mise.mjs` | The `mise -C <home> ...` argv shapes and JSON parsing. |
 | `docker/harness/lock.mjs` | One global O_EXCL lock with stale-owner detection. |
@@ -87,12 +86,10 @@ throwing.
 | `operation` / `operationState` / `inProgress` | Last operation kind and state; `inProgress` is a live lock held for this harness. |
 | `minimumVersion` / `minimumSatisfied` | The enforced floor and whether the installed version meets it. |
 | `managedVersions` | Every version this manager installed for the harness. |
-| `bakedFallback` | `{ present, executable, version }` for the historical baked binary; always `present: false` in the final images. |
 | `credentials` | `{ present, env, paths }` - which credential sources exist. |
 
-`options.authenticate` (default `true`) controls sign-in probing;
-`options.probeBaked` (default `false`) adds a version probe for the baked
-binary. Pass `authenticate: false` for a cheap poll.
+`options.authenticate` (default `true`) controls sign-in probing. Pass
+`authenticate: false` for a cheap poll.
 
 Facts are never derived from a silent PATH search. `executable` is
 `<install_path>/<relative executable>` from the catalogue, cross-checked with
@@ -191,17 +188,6 @@ cursor         .../installs/cursor-agent/<v>/dist-package/cursor-agent
 the catalogue path is the fallback so resolution never depends on a PATH search.
 No `agent` alias is created for Cursor.
 
-## Baked fallback semantics
-
-The catalogue still lists the historical fallback paths
-(`/opt/npm-global/bin/<name>`, `/opt/cursor/.local/bin/cursor-agent`), but the
-final `core`/`browser` images ship no baked harness executables: `present` is
-always `false` there, and Uninstall always removes the provider. The field is
-kept so the manager's contract does not change shape and an older image
-loaded alongside this code still reports honestly. A live read-only status of
-the fallback binary is opt-in via `probeBaked: true`; the default reports
-presence and path only.
-
 ## Credentials and sign-in
 
 Uninstall never deletes a credential. The catalogued surfaces are:
@@ -225,7 +211,7 @@ the verdict.
 ## Architecture and exact-version policy
 
 Both x64 and arm64 are supported for every entry; verification in this effort is
-native amd64 only, per the plan. Exact versions are resolved by mise at
+native amd64 only. Exact versions are resolved by mise at
 install/update time and recorded verbatim; no floating selection is retained.
 Known backend limits are not papered over: Grok advertises only the current
 stable version and cursor versions are date-hash pins, so an exact recorded
@@ -240,4 +226,4 @@ when the harness is runnable; no PATH shim is needed or permitted. Setup renders
 the manager's configured/installed/runnable/authenticated/failed facts and calls
 the lifecycle methods directly. `status({ authenticate: false })` is the cheap,
 local path for polling and never installs or updates. Cursor's native self-update
-remains accepted, and final images report no baked fallback.
+remains accepted.

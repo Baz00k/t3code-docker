@@ -13,8 +13,7 @@ scripts/test-offline.sh t3code:core      # container assertions, --network none
 
 The manager API is in [`harness-api.md`](./harness-api.md); the lifecycle
 routes are in [`harness-usage.md`](./harness-usage.md); the T3 seam is in
-[`provider-integration.md`](./provider-integration.md). The canonical product
-contract is [`TOOLCHAIN-MANAGEMENT-PLAN.md`](../../TOOLCHAIN-MANAGEMENT-PLAN.md).
+[`provider-integration.md`](./provider-integration.md).
 
 ## Strategy
 
@@ -91,7 +90,7 @@ polls answer `cheap` directly without starting an auth refresh.
 | Provider catalogue | any `/providers` serving stale/bundled data | at most one fetch per 60 s, shared by concurrent polls |
 
 A cold offline `/status` serves cheap local facts (installed, runnable, exact
-versions, no baked fallback) with auth unknown (`signedIn: null` where nothing
+versions) with auth unknown (`signedIn: null` where nothing
 was ever probed, else the last definite verdict via the existing `stableAuth`
 mapping, marked stale). A warm server serves its last authenticated facts.
 Either way the in-flight refresh lands in the background and the following

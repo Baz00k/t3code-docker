@@ -347,8 +347,7 @@ if ($('mint')) {
   // ------------------------------------------------------------ agents --
   // The Agents card is a thin surface over the shared harness manager (via
   // /status and /harnesses): exact versions, runnable state, the operation in
-  // flight, the failure that stopped the last one, and the baked fallback that
-  // remains after an Uninstall. Sign-in still probes the managed executable,
+  // flight, and the failure that stopped the last one. Sign-in still probes the managed executable,
   // and lifecycle POSTs resolve `latest` to an exact version server-side, so
   // the card and `t3-harness` report identical selections and errors.
   const versionDrafts = new Map();
@@ -363,11 +362,10 @@ if ($('mint')) {
       return chip('info', label);
     }
     if (h.failed) return chip('bad', 'Failed');
-    if (!h.installed && !(h.bakedFallback && h.bakedFallback.present)) return chip('bad', 'Not installed');
+    if (!h.installed) return chip('bad', 'Not installed');
     if (h.runnable && h.signedIn === true) return chip('ok', 'Signed in');
     if (h.runnable && h.signedIn === false) return chip('warn', 'Not signed in');
     if (h.runnable) return chip('idle', 'Installed');
-    if (h.bakedFallback && h.bakedFallback.present) return chip('warn', 'Fallback');
     if (!h.supported) return chip('idle', 'No build for this arch');
     return chip('idle', 'Sign-in state not readable');
   };
@@ -379,10 +377,6 @@ if ($('mint')) {
     if (h.runnable) bits.push('runnable');
     else if (h.installed) bits.push('installed');
     if (h.inProgress && h.operation) bits.push(esc(h.operation) + ' in progress');
-    if (h.bakedFallback && h.bakedFallback.present) {
-      bits.push('baked fallback'
-        + (h.bakedFallback.version ? ' ' + esc(h.bakedFallback.version) : ' present'));
-    }
     const lines = [];
     if (bits.length) lines.push(bits.join(' · '));
     if (h.failed && h.failure) {
@@ -394,8 +388,8 @@ if ($('mint')) {
     const how = h.canSignIn && h.canSetKey ? 'Browser sign-in, or a stored API key'
       : h.canSignIn ? 'Browser sign-in'
       : h.canSetKey ? 'API key, per provider' : '';
-    if (how && (h.runnable || (h.bakedFallback && h.bakedFallback.present))) lines.push(esc(how));
-    if (!h.installed && !(h.bakedFallback && h.bakedFallback.present)) {
+    if (how && h.runnable) lines.push(esc(how));
+    if (!h.installed) {
       lines.push('Not present - install the managed harness to use it');
     }
     return lines.length
@@ -432,7 +426,7 @@ if ($('mint')) {
           + '<button type="button" class="tc-btn tc-btn--ghost tc-btn--sm h-uninstall"'
           + ' data-agent="' + h.id + '">Uninstall</button>';
       }
-      const signin = (h.runnable || (h.bakedFallback && h.bakedFallback.present)) && !busy
+      const signin = h.runnable && !busy
         ? (h.canSignIn
             ? '<button type="button" class="tc-btn tc-btn--ghost tc-btn--sm signin"'
               + ' data-agent="' + h.id + '">Sign in</button>' : '')
@@ -490,8 +484,7 @@ if ($('mint')) {
     for (const b of document.querySelectorAll('.h-uninstall')) {
       b.onclick = () => confirmDialog({
         title: 'Uninstall this harness?',
-        body: 'The managed executable is removed. Credentials stay, and any '
-          + 'baked fallback in this image remains usable.',
+        body: 'The managed executable is removed. Credentials stay.',
         confirmLabel: 'Uninstall',
         onConfirm: () => callLifecycle('uninstall', b.dataset.agent, b),
       });
