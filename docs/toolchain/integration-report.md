@@ -1,5 +1,11 @@
 # Transitional Product Integration Report
 
+> **Historical record (TM-12).** This report verified the transitional product
+> before the atomic switch. The transitional `slim`/`full` targets it refers to
+> were removed by TM-13; see [`migration.md`](./migration.md) for the current
+> product and [`image-contract.md`](./image-contract.md) for the final target
+> contract.
+
 TM-12 deliverable. The assembled transition product is verified end to end
 before the atomic switch is authorized: a fresh final image installs and
 launches every supported harness through T3, exact versions and credentials

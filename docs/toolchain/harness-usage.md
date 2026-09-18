@@ -11,7 +11,7 @@ Companion verification:
 ```sh
 node scripts/harness-ui-audit.js                              # 19 static checks
 node scripts/harness-ui-audit.js http://127.0.0.1:13778 KEY   # plus live schema
-scripts/test-harness-surfaces.sh t3code:slim                  # container assertions
+scripts/test-harness-surfaces.sh t3code:core                  # container assertions
 ```
 
 The manager API is in [`harness-api.md`](./harness-api.md); the T3 seam is in
@@ -66,7 +66,7 @@ manager's facts plus the sign-in affordances the card needs:
   "operationState": "ok",
   "inProgress": false,
   "managedVersions": ["2.1.270"],
-  "bakedFallback": { "present": true, "executable": "/opt/npm-global/bin/claude", "version": null },
+  "bakedFallback": { "present": false, "executable": "/opt/npm-global/bin/claude", "version": null },
   "credentialsPresent": false,
   "canSignIn": true,
   "canSetKey": false,
@@ -76,11 +76,11 @@ manager's facts plus the sign-in affordances the card needs:
 
 `version` is `installedVersion ?? recordedVersion ?? null`: the exact version
 the card shows. `signedIn` is `true`, `false`, or `null` (not readable) from
-the manager's bounded probe of the managed executable. `bakedFallback`
-reports the transitional baked binary; `present: true` means Uninstall must
-not claim the provider is absent. `operation`/`operationState`/`inProgress`
-describe the last or live operation; `failed`/`failure` carry the
-interrupted, failed, or below-minimum reason.
+the manager's bounded probe of the managed executable. `bakedFallback` reports
+the historical baked binary; the final images ship none, so it is always
+`present: false` and Uninstall never has to claim a fallback. `operation`/
+`operationState`/`inProgress` describe the last or live operation;
+`failed`/`failure` carry the interrupted, failed, or below-minimum reason.
 
 Mutations take `{ id, version? }` (`version` omitted means latest) and return
 `{ ok, code, error?, harness, sync? }`:
@@ -153,8 +153,8 @@ additionally:
   after every sign-in or key save so the next poll re-probes.
 
 Sign-in and the Codex stdin key flow run through the managed executable when
-one is runnable, falling back to the baked binary otherwise, so credentials
-land where the executable T3 launches reads them.
+one is runnable. The final images bake no harness, so a harness that is not
+installed offers Install rather than a sign-in that could not run.
 
 ## Out of scope
 

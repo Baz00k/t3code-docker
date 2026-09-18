@@ -253,9 +253,11 @@ linux/arm64 artifacts were confirmed with HTTP 206 range requests.
 | grok | `http:grok` | `storage.googleapis.com/grok-build-public-artifacts/cli/grok-<v>-linux-{x86_64,aarch64}`; `version_list_url` only advertises stable | yes | yes | none |
 | cursor-agent | `http:cursor-agent` | `downloads.cursor.com/lab/<date-hash>/linux/{x64,arm64}/agent-cli-package.tar.gz`; version discovered from the install script | yes | yes | none |
 
-The transitional image pins `claude 2.1.270`, `codex 0.154.0`,
-`opencode 1.18.30`, `grok 1.0.30`, and unpinned Cursor; all of those exact
-versions exist on the sources above.
+The transitional images that were current when this audit ran pinned
+`claude 2.1.270`, `codex 0.154.0`, `opencode 1.18.30`, `grok 1.0.30`, and
+unpinned Cursor; all of those exact versions exist on the sources above. The
+final images bake no harness: the manager resolves from the same sources and
+records the exact version at explicit install time.
 
 Risks handed to TM-06:
 

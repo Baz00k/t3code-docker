@@ -4,6 +4,13 @@ The reproducible starting point for the mise toolchain-management effort. Every
 child ticket branches from the integration branch recorded here, and every
 size/startup claim later in the effort is compared against these numbers.
 
+> **Historical record.** This file documents the pre-switch `slim`/`full`
+> product and the numbers the final `core`/`browser` targets are measured
+> against. Its commands reference targets that no longer build after the TM-13
+> product switch; they are kept as the baseline record, not as current usage.
+> See [`migration.md`](./migration.md) and
+> [`image-contract.md`](./image-contract.md) for the current product.
+
 The canonical product contract is [`TOOLCHAIN-MANAGEMENT-PLAN.md`](../../TOOLCHAIN-MANAGEMENT-PLAN.md).
 
 ## Repository Setup

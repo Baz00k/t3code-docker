@@ -65,9 +65,9 @@ shebang that reintroduces whatever a project or mise put first on `PATH`.
 
 ## Mutable npm prefix
 
-`/opt/npm-global` is the writable prefix for baked harnesses, the browser MCP
-servers, and plain `npm i -g` by the unprivileged user. It is configured through
-the user's own npm config rather than a process-wide variable:
+`/opt/npm-global` is the writable prefix for the browser MCP servers and plain
+`npm i -g` by the unprivileged user. It is configured through the user's own
+npm config rather than a process-wide variable:
 
 ```text
 /home/t3/.npmrc   ->   prefix=/opt/npm-global
@@ -82,9 +82,9 @@ the user's own npm config rather than a process-wide variable:
 - a project that changes its own `~/.npmrc` only ever redirects its own installs,
   never the T3 installation.
 
-T3 Code's provider updater does not depend on this: it derives the prefix from
-each harness's real path and installs with an explicit `--prefix`, so baked
-harnesses keep updating until the product switch (see
+T3 Code's provider updater is deliberately not used for managed harnesses:
+they install through mise, and their resolved paths are manual-only in the
+provider audit, so T3's update action cannot fight the manager (see
 [`provider-audit.md`](./provider-audit.md)).
 
 ## User initialization hook
@@ -117,10 +117,10 @@ root's default `HOME` and `PATH` stay free of user-controlled tools.
 ## Verification
 
 ```sh
-scripts/test-infrastructure.sh t3code:slim
-scripts/test-infrastructure.sh t3code:full
-scripts/smoke-test.sh t3code:slim
-scripts/smoke-test.sh t3code:full
+scripts/test-infrastructure.sh t3code:core
+scripts/test-infrastructure.sh t3code:browser
+scripts/smoke-test.sh t3code:core
+scripts/smoke-test.sh t3code:browser
 ```
 
 `test-infrastructure.sh` covers:
@@ -147,8 +147,7 @@ scripts/smoke-test.sh t3code:full
 - **TM-06/TM-07 (harness manager):** managed executables resolve to concrete
   absolute paths under the user home and are passed to T3 as
   `<Provider>Settings.binaryPath`; the launcher and mutable prefix here are
-  unchanged by that. Diagnostics keep reporting the baked fallback until the
-  product switch.
-- Deliberately unchanged by TM-03: the baked harness set, the `slim`/`full`
-  package inventories, and the Cursor vendor installer. T3's native updater
-  still mutates baked harnesses in `/opt/npm-global` until the product switch.
+  unchanged by that.
+- **TM-13 (product switch):** the baked harness set and the Cursor vendor
+  installer were removed with the `slim`/`full` targets; only the immutable T3
+  infrastructure described above ships now.

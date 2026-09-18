@@ -157,11 +157,11 @@ entrypoint.
 ## Verification
 
 ```sh
-scripts/build.sh --target slim
-scripts/test-ownership.sh t3code:slim
-scripts/test-mise.sh t3code:slim
-scripts/test-infrastructure.sh t3code:slim
-scripts/smoke-test.sh t3code:slim
+scripts/build.sh --target core
+scripts/test-ownership.sh t3code:core
+scripts/test-mise.sh t3code:core
+scripts/test-infrastructure.sh t3code:core
+scripts/smoke-test.sh t3code:core
 ```
 
 `test-ownership.sh` seeds volumes directly (root-owned, foreign-owned, partial
@@ -181,5 +181,6 @@ state. Verification is amd64-only, per the plan.
   `t3-doctor` will list it under `installed tools` automatically.
 - **TM-09 (offline-safe status):** the mount verdicts are local, read-only
   `/proc/self/mountinfo` parses and need no network.
-- The `slim`/`full` package inventories and the baked harnesses are deliberately
-  unchanged by TM-05.
+- The `core`/`browser` package inventories and the absence of baked harnesses
+  are the product switch's contract (TM-13); the managed harnesses are one more
+  tool under the persistent home.

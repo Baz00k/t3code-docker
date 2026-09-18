@@ -165,10 +165,10 @@ tool selection anywhere else:
 
 ```sh
 scripts/generate-mise-idiomatic.sh --check
-scripts/build.sh --target slim
-scripts/test-mise.sh t3code:slim
-scripts/test-infrastructure.sh t3code:slim
-scripts/smoke-test.sh t3code:slim
+scripts/build.sh --target core
+scripts/test-mise.sh t3code:core
+scripts/test-infrastructure.sh t3code:core
+scripts/smoke-test.sh t3code:core
 ```
 
 `test-mise.sh` builds a fresh named volume and one offline container from the
@@ -188,5 +188,6 @@ built and published but not separately smoked.
   data dir; installs must land under `/home/t3` so they survive recreation, and
   the executable a provider launcher is pointed at should be resolved through
   `mise` rather than a `PATH` search.
-- The baked harnesses, the `slim`/`full` package inventories, and T3's native
-  provider updater are deliberately unchanged by TM-04.
+- The harness executables are not baked, the `core`/`browser` package
+  inventories are the product contract (TM-13), and T3's native provider updater
+  is deliberately redirected to manual-only for mise-owned paths (TM-07).

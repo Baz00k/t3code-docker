@@ -10,7 +10,7 @@ Companion verification:
 
 ```sh
 node --test tests/harness-manager.test.mjs          # 22 unit tests
-scripts/test-harness-manager.sh t3code:slim         # 125 container assertions
+scripts/test-harness-manager.sh t3code:core         # 125 container assertions
 ```
 
 The provider facts behind the catalogue are in
@@ -86,7 +86,7 @@ throwing.
 | `operation` / `operationState` / `inProgress` | Last operation kind and state; `inProgress` is a live lock held for this harness. |
 | `minimumVersion` / `minimumSatisfied` | The enforced floor and whether the installed version meets it. |
 | `managedVersions` | Every version this manager installed for the harness. |
-| `bakedFallback` | `{ present, executable, version }` for the transitional baked binary. |
+| `bakedFallback` | `{ present, executable, version }` for the historical baked binary; always `present: false` in the final images. |
 | `credentials` | `{ present, env, paths }` - which credential sources exist. |
 
 `options.authenticate` (default `true`) controls sign-in probing;
@@ -117,9 +117,8 @@ await harness.invalidateAuth("claude");                // after a sign-in change
   `managedVersions`. It never prunes other versions; Uninstall removes what the
   manager installed.
 - **Uninstall** removes the global selection and every `managedVersions` entry.
-  It never touches credential directories or files, and it reports the baked
-  fallback and remaining installed versions instead of claiming the provider is
-  absent.
+  It never touches credential directories or files, and it reports remaining
+  installed versions instead of claiming the provider is absent.
 - Versions are validated against a strict syntax before use and the
   `version:`/`tool:` are always separate argv entries, so no request input can
   become a shell token.
@@ -193,18 +192,14 @@ No `agent` alias is created for Cursor.
 
 ## Baked fallback semantics
 
-During the transition every image still bakes the harnesses. `bakedFallback`
-reports the first existing path from the catalogue's `bakedFallbacks`:
-
-```text
-claude/codex/opencode/grok -> /opt/npm-global/bin/<name>
-cursor                     -> /opt/cursor/.local/bin/cursor-agent
-```
-
-`present: true` means the provider is not actually absent after Uninstall, and
-the UI/CLI must say so. A live read-only status of the fallback binary is opt-in
-via `probeBaked: true`; the default reports presence and path only. Baked
-binaries are removed in the atomic product switch (TM-13), not here.
+The catalogue still lists the historical fallback paths
+(`/opt/npm-global/bin/<name>`, `/opt/cursor/.local/bin/cursor-agent`), but the
+final `core`/`browser` images ship no baked harness executables: `present` is
+always `false` there, and Uninstall always removes the provider. The field is
+kept so the manager's contract does not change shape and a transitional image
+loaded alongside this code still reports honestly. A live read-only status of
+the fallback binary is opt-in via `probeBaked: true`; the default reports
+presence and path only.
 
 ## Credentials and sign-in
 
@@ -252,8 +247,8 @@ imported directly by those changes.
   self-updater is accepted as-is and must not be gated; a managed Cursor may
   update itself beyond the version the manager recorded.
 - **TM-08 (setup UI and CLI):** render `status()` facts - distinguish
-  configured/installed/runnable/authenticated/failed and the baked fallback -
-  and call `install`/`update`/`uninstall`. Drop the ad-hoc `which()` detection;
+  configured/installed/runnable/authenticated/failed - and call
+  `install`/`update`/`uninstall`. Drop the ad-hoc `which()` detection;
   keep the existing sign-in flows and call `invalidateAuth(id)` when they
   finish. Run as `t3` and import the module from wherever the image copies it.
 - **TM-09 (offline status):** `status({ authenticate: false })` performs one

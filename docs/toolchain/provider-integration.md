@@ -9,7 +9,7 @@ Companion verification:
 
 ```sh
 node --test tests/provider-integration.test.mjs              # 14 unit tests
-scripts/test-provider-integration.sh t3code:slim t3code:full # 54 container assertions
+scripts/test-provider-integration.sh t3code:core t3code:browser # 54 container assertions
 ```
 
 The provider facts behind the seam are in
@@ -80,9 +80,9 @@ const report = await integration.sync();
 
 `sync()` returns `{ ok, applied, cleared, unchanged, missing, degraded,
 settingsChanged }`. A degraded mise is reported, not fatal - T3 keeps its own
-defaults and the transitional baked harnesses stay usable. A malformed
-settings file is **never overwritten**: `sync` returns
-`{ ok: false, code: "settings-unreadable" }` and leaves the bytes alone.
+defaults and no `binaryPath` is written, so an installed provider is not
+half-configured. A malformed settings file is **never overwritten**: `sync`
+returns `{ ok: false, code: "settings-unreadable" }` and leaves the bytes alone.
 
 Writes are atomic (temp file plus `rename`). `sync` writes the settings file
 only when a value actually changed, and the state file only when its record
@@ -191,7 +191,7 @@ container:
   reports the managed version, `installed: true`, and a manual-only update
   command, while decoy binaries earlier on `PATH` are unused for managed
   harnesses (an unmanaged provider still falls back to `PATH`);
-- browser registration on `full` runs through the managed Claude, Codex and
+- browser registration on `browser` runs through the managed Claude, Codex and
   OpenCode and produces valid config for all three;
 - `t3-login` names `cursor-agent` and accepts the managed Claude.
 
