@@ -395,6 +395,8 @@ textarea {
   align-items: center;
   gap: 10px;
   min-width: 0;
+  /* The identity of the page never gives way; the build stamp beside it does. */
+  flex: none;
 }
 
 .tc-mark {
@@ -1721,6 +1723,19 @@ a.tc-btn:hover {
 
 .console-top { position: sticky; top: 0; z-index: 40; }
 .console-top .tc-chrome { position: static; }
+
+/* The build stamp on a CI image is the branch and a full commit hash. It is
+   information, not identity, so when the chrome runs out of width the stamp
+   truncates instead of squeezing the brand beside it. The tag is normally a
+   flex box; as a text-only block it can ellipsize its own line. */
+#build {
+  display: block;
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  line-height: 22px;
+}
+
 @media (max-width: 560px) { #build { display: none; } }
 
 /* A URL rendered as machine data is still a URL: make it behave like one,
