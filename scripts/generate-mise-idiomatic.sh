@@ -72,14 +72,23 @@ curl -fsSL "$SOURCE" -o "$TMP/mise-src.tar.gz"
 mkdir -p "$TMP/src"
 tar xzf "$TMP/mise-src.tar.gz" -C "$TMP/src"
 
-REGISTRY="$(find "$TMP/src" -type d -name registry -path '*/mise-*/*' | head -1)"
-if [ -z "$REGISTRY" ]; then
-  echo "generate-mise-idiomatic.sh: no registry directory in ${REF} source" >&2
+SOURCE_ROOT="$(find "$TMP/src" -mindepth 1 -maxdepth 1 -type d -name 'mise-*' -print -quit)"
+REGISTRY="${SOURCE_ROOT}/registry"
+if [ -z "$SOURCE_ROOT" ] || [ ! -d "$REGISTRY" ]; then
+  echo "generate-mise-idiomatic.sh: no top-level registry directory in ${REF} source" >&2
   exit 1
 fi
 
-TOOLS="$(grep -lE '^idiomatic_files[[:space:]]*=' "$REGISTRY"/*.toml \
-  | sed 's#.*/##; s#\.toml$##' | sort -u)"
+shopt -s nullglob
+registry_files=("$REGISTRY"/*.toml)
+shopt -u nullglob
+if [ "${#registry_files[@]}" -eq 0 ]; then
+  echo "generate-mise-idiomatic.sh: no registry entries in ${REF} source" >&2
+  exit 1
+fi
+
+TOOLS="$(grep -lE '^idiomatic_files[[:space:]]*=' "${registry_files[@]}" \
+  | sed 's#.*/##; s#\.toml$##' | sort -u || true)"
 if [ -z "$TOOLS" ]; then
   echo "generate-mise-idiomatic.sh: no idiomatic tools found in ${REF} registry" >&2
   exit 1
