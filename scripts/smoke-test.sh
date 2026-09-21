@@ -550,8 +550,19 @@ check "the page falls back to its own path when no mount is known" \
 mount_is_declared() { page_says_mount "http://127.0.0.1:3774/__setup"; }
 check "and tells the page which prefix it is under" mount_is_declared
 
+# Captured rather than piped into `grep -q`: the page is ~90 KB, and grep exits
+# at the first match, so curl is killed writing the rest and fails under
+# pipefail. It raced on amd64 and lost reliably under arm64 emulation.
+serves_page_under_prefix() {
+  local page
+  page="$(docker exec "$NAME" curl -fsS --max-time 5 http://127.0.0.1:3774/__setup)" || return 1
+  case "$page" in
+    *'<!doctype html>'*|*'<!DOCTYPE html>'*) return 0 ;;
+    *) return 1 ;;
+  esac
+}
 check "serves the page under an unconfigured path prefix" \
-  "retry 5 \"docker exec $NAME curl -fsS --max-time 5 http://127.0.0.1:3774/__setup | grep -qi '<!doctype html>'\""
+  "retry 5 serves_page_under_prefix"
 check "and its routes work under that prefix" \
   "retry 5 \"docker exec $NAME sh -c \\\"curl -sS --max-time 5 -c /tmp/j2 -d 'key=$SETUP_KEY' -o /dev/null http://127.0.0.1:3774/__setup/login && curl -fsS --max-time 5 -b /tmp/j2 http://127.0.0.1:3774/__setup/status | grep -q publicUrl\\\"\""
 
