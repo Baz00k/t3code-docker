@@ -50,9 +50,9 @@ page pairs a device and installs and signs in the agents without a shell.
   3000` and get a public https URL and a QR code - no DNS, no certificate, no
   port forwarding. Both routes drive the same API, so neither can go stale.
 - **Multi-arch, and actually tested.** `linux/amd64` and `linux/arm64` each
-  build on their own native runner, and amd64 is booted and asserted against —
-  dozens of checks plus an end-to-end harness lifecycle run — before anything
-  is published.
+  built *and* smoke-tested on their own native runner — dozens of assertions
+  against a booted container, plus an end-to-end harness lifecycle run, before
+  anything is published.
 - **The image says what it is.** The setup page shows the release tag it was
   built from, so a pull can be confirmed rather than assumed.
 
@@ -83,9 +83,9 @@ docker compose up -d --build
 
 Prebuilt images are published to `ghcr.io/dizys/t3code-docker` — `:latest` and
 `:core` for the default image, `:browser` for the Chromium/MCP variant. They are
-multi-arch manifests covering `linux/amd64` and `linux/arm64`, each built on
-its own native runner, so `docker pull` resolves to the right one on an ARM
-server. (`v0.1.0` predates this and is
+multi-arch manifests covering `linux/amd64` and `linux/arm64`, with each
+architecture built *and* tested on its own native runner, so `docker pull`
+resolves to the right one on an ARM server. (`v0.1.0` predates this and is
 amd64-only.) To run a published image instead of building, set `T3_IMAGE` in
 `.env` and drop `--build`. The historical `:slim` and `:full` tags stay
 pullable and stop receiving updates; see [Upgrading from `slim`/`full`](#upgrading-from-slimfull).
@@ -650,14 +650,15 @@ one:
   it against your build (`./scripts/smoke-test.sh t3code:core`) and add an
   assertion for whatever you fixed. Most of the assertions in there exist
   because something shipped broken once.
-- **CI builds both targets on both architectures** before anything is
-  published. amd64 is the platform the checks run against; arm64 is built and
-  published but not separately booted.
+- **CI builds and smoke-tests both targets on both architectures** before
+  anything is published, so a change that only works on amd64 will be caught.
+  The slower harness-lifecycle E2E and the size measurement run on amd64.
 
 Publishing happens on tags only: push `vX.Y.Z` and the workflow builds each
-target for each architecture, smoke tests and runs the harness-lifecycle E2E
-against the exact pushed amd64 digest, then stitches the tested digests into
-one manifest without rebuilding. `latest` points at `core`.
+target for each architecture, smoke tests every one against the exact pushed
+digest, runs the harness-lifecycle E2E and measures on amd64, then stitches
+the tested digests into one manifest without rebuilding. `latest` points at
+`core`.
 
 ## License
 
