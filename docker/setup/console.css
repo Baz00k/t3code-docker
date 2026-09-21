@@ -1728,7 +1728,7 @@ a.tc-btn:hover {
    information, not identity, so when the chrome runs out of width the stamp
    truncates instead of squeezing the brand beside it. The tag is normally a
    flex box; as a text-only block it can ellipsize its own line. */
-#build {
+.tc-tag--build {
   display: block;
   min-width: 0;
   overflow: hidden;
@@ -1736,7 +1736,7 @@ a.tc-btn:hover {
   line-height: 22px;
 }
 
-@media (max-width: 560px) { #build { display: none; } }
+@media (max-width: 560px) { .tc-tag--build { display: none; } }
 
 /* A URL rendered as machine data is still a URL: make it behave like one,
    without losing the mono voice the data column is set in. */

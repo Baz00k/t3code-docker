@@ -1,4 +1,0 @@
-# Precedence fixture: an explicit mise.toml must win over .tool-versions, which
-# must win over the idiomatic .nvmrc. All three name a different Node version.
-[tools]
-node = "20"

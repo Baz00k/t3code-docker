@@ -12,7 +12,7 @@
 // `sync()` is read-only with respect to the toolchain: it asks the manager for
 // status (which never installs or updates) and edits only the settings file.
 // The setup console calls it after an explicit Install/Update/Uninstall; the
-// entrypoint calls it once at startup. See docs/toolchain/provider-integration.md.
+// entrypoint calls it once at startup.
 import os from "node:os";
 
 import { createFs } from "./fsutil.mjs";

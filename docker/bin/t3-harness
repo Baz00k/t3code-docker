@@ -6,7 +6,7 @@
 # identical selections and errors - no PATH workaround, no second installer.
 # After every Install/Update/Uninstall this notifies T3 through a single
 # provider-integration sync() so a running server picks up the new binaryPath
-# without a restart. See docs/toolchain/harness-usage.md.
+# without a restart.
 #
 #   t3-harness list [--json]
 #   t3-harness status [--json] [id]

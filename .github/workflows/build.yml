@@ -58,14 +58,10 @@ jobs:
             fi
           } >> "$GITHUB_STEP_SUMMARY"
 
-  # Every target builds for both architectures on its own native runner. Only
-  # amd64 is smoke-tested; arm64 members are built and digest-mapped but are not
-  # separately smoke-tested (see docs/toolchain/ci-evidence.md).
-  #
-  # On a release tag both final targets push by digest, and `merge` stitches the
-  # tested digests into the release tags. Nothing is rebuilt between test and
-  # publish. `latest` becomes `core`; the historical `slim`/`full` tags stop
-  # receiving updates and keep their existing artifacts.
+  # Every target builds for both architectures on its own native runner; amd64
+  # is the one that gets tested. On a release tag both targets push by digest
+  # and `merge` stitches the tested digests into the release tags, so nothing
+  # is rebuilt between test and publish.
   build:
     name: ${{ matrix.target }} (${{ matrix.platform }})
     runs-on: ${{ matrix.runner }}
@@ -86,15 +82,6 @@ jobs:
             runner: ubuntu-24.04-arm
     steps:
       - uses: actions/checkout@v4
-
-      # The browser image is several GB; the default runner does not have room
-      # for it alongside the preinstalled toolchains.
-      - name: Reclaim disk
-        if: matrix.target == 'browser'
-        run: |
-          sudo rm -rf /usr/share/dotnet /usr/local/lib/android /opt/ghc \
-                      /usr/local/share/boost "$AGENT_TOOLSDIRECTORY"
-          df -h /
 
       - name: Lowercase the image path
         id: image
@@ -121,15 +108,13 @@ jobs:
           context: .
           target: ${{ matrix.target }}
           platforms: linux/${{ matrix.platform }}
-          # Tag pushes go straight to the registry by digest, so the smoke
-          # test and the E2E below pull the exact artifact that would be
-          # released. Everything else stays local.
+          # Tag pushes go to the registry by digest so the checks below pull the
+          # exact artifact that would be released; everything else stays local.
           load: ${{ github.ref_type != 'tag' }}
           outputs: ${{ github.ref_type == 'tag' && format('type=image,name={0}/{1},push-by-digest=true,name-canonical=true,push=true', env.REGISTRY, steps.image.outputs.slug) || '' }}
           tags: ${{ github.ref_type != 'tag' && format('t3code:{0}', matrix.target) || '' }}
           labels: ${{ steps.meta.outputs.labels }}
-          # The tag on a release build, the branch otherwise; the setup page
-          # shows it so a pull can be confirmed at a glance.
+          # The setup page shows this, so a pull can be confirmed at a glance.
           build-args: |
             IMAGE_VERSION=${{ github.ref_type == 'tag' && github.ref_name || format('{0}@{1}', github.ref_name, github.sha) }}
             IMAGE_VARIANT=${{ matrix.target }}
@@ -137,9 +122,8 @@ jobs:
           cache-to: type=gha,mode=min,scope=${{ matrix.target }}-${{ matrix.platform }}
 
       # buildx pushes an index when it attaches provenance, so the digest above
-      # refers to the index. The platform manifest is its member, and that is
-      # the artifact the smoke test, the E2E and the promoted manifest must
-      # agree on.
+      # refers to that index. Its platform member is the artifact the checks and
+      # the promoted manifest must agree on.
       - name: Resolve the platform digest
         id: platform
         if: github.ref_type == 'tag'
@@ -171,9 +155,7 @@ jobs:
 
       # The release gate for the assembled product: install and launch all five
       # managed harnesses through T3, survive recreation (including offline),
-      # prove project tools stay separate from image infrastructure, and on
-      # `browser` drive real pages through the managed MCP registration.
-      # Runs against the exact pushed digest on native amd64.
+      # and on `browser` drive real pages through the managed MCP registration.
       - name: Final-target E2E (native amd64, release only)
         if: github.ref_type == 'tag' && matrix.platform == 'amd64'
         env:
@@ -183,8 +165,6 @@ jobs:
           scripts/test-toolchain-e2e.sh --variant "$VARIANT" \
             "${REGISTRY}/${{ steps.image.outputs.slug }}@${PLATFORM_DIGEST}"
 
-      # Measured from the pulled digest, so the size and startup timing belong
-      # to the exact artifact under test.
       - name: Measure the tested artifact (native amd64, release only)
         if: github.ref_type == 'tag' && matrix.platform == 'amd64'
         env:
@@ -211,10 +191,8 @@ jobs:
             "| `\(.target)` | \(.compressed_bytes) B | \(.unpacked_bytes) B | \(.startup_seconds) s |"' \
             "/tmp/evidence/measure-${VARIANT}.json" >> "$GITHUB_STEP_SUMMARY"
 
-      # The evidence artifact is written only after the smoke test and E2E above
-      # passed, and it names the exact platform digest that was tested. `merge`
-      # promotes the pushed indexes without rebuilding anything and asserts
-      # that their members are these digests.
+      # Written only after the checks above passed, so a failed run leaves
+      # nothing for `merge` to promote.
       - name: Record the tested digest
         if: github.ref_type == 'tag'
         env:
@@ -245,17 +223,13 @@ jobs:
         if: github.ref_type == 'tag'
         with:
           name: build-evidence-${{ matrix.target }}-${{ matrix.platform }}
-          # The evidence contract is the build record; the measurement file
-          # feeds the run summary and its numbers are copied into the record.
           path: /tmp/evidence/build-*.json
           if-no-files-found: error
           retention-days: 7
 
   # Promote the tested digests into the release tags. No image is rebuilt: the
   # manifest list is assembled from the digests the build jobs pushed, and
-  # `verify-promoted-manifest.sh` asserts that each release tag maps exactly the
-  # digests the jobs recorded. `core` becomes `latest`; historical `slim`/`full`
-  # tags keep their existing artifacts and stop receiving updates.
+  # `verify-promoted-manifest.sh` asserts each release tag maps exactly those.
   merge:
     if: github.event_name == 'push' && github.ref_type == 'tag'
     runs-on: ubuntu-latest
@@ -311,8 +285,6 @@ jobs:
         run: |
           set -euo pipefail
           refs=(); expects=(); amd64_tested=0; arm64=0
-          # Only the build records; the run's measurement JSON also lands in
-          # /tmp/evidence and is a differently shaped document.
           for f in /tmp/evidence/build-*.json; do
             platform="$(jq -r .platform "$f")"
             digest="$(jq -r .digest "$f")"
@@ -322,9 +294,7 @@ jobs:
               linux/arm64) arm64=$((arm64 + 1)) ;;
               *) echo "unexpected platform '$platform' in $f" >&2; exit 1 ;;
             esac
-            # Promote the pushed index (provenance included); assert that its
-            # platform members are the manifests the smoke test and E2E ran
-            # against.
+            # Promote the pushed index so provenance stays attached.
             refs+=("${REGISTRY}/${SLUG}@${index}")
             expects+=(--expect "${platform}=${digest}")
           done

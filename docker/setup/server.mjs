@@ -103,8 +103,8 @@ const health = async () => {
 // --- managed harnesses ------------------------------------------------------
 //
 // One harness-management module owns exact-version install, state, locking and
-// executable resolution for the five supported harnesses (see
-// docs/toolchain/harness-api.md). The setup console and the `t3-harness` CLI
+// executable resolution for the five supported harnesses. The setup console
+// and the `t3-harness` CLI
 // are both thin surfaces over it, so they report identical selections and
 // errors - no PATH workaround, no second installer.
 //
@@ -162,7 +162,7 @@ async function loadProviderIntegration() {
 // After Install/Update/Uninstall, T3 must pick up the new `binaryPath`
 // selection. T3 watches its settings file live, so one `sync()` reaches a
 // running server without a restart. This is the notification interface -
-// never a second settings writer (see docs/toolchain/provider-integration.md).
+// never a second settings writer.
 const syncManagedProviders = async () => {
   const harness = await loadHarness();
   const { createProviderIntegration } = await loadProviderIntegration();
@@ -245,7 +245,7 @@ const toPublicHarness = (facts) => ({
 // a coalesced refresh with a cheap local fallback. Nothing on these paths
 // installs or updates: the manager reads are `status()` with
 // `MISE_AUTO_INSTALL=false`, and the provider path only reads a file or
-// fetches a catalogue. See docs/toolchain/offline.md for the contract.
+// fetches a catalogue.
 
 // One authenticated refresh at a time, shared by concurrent polls; the cheap
 // local read (`authenticate: false`: one `mise ls` plus filesystem checks)
@@ -272,7 +272,7 @@ const harnessCache = createHarnessCache({
 
 /** Authenticated snapshot for /status and /harnesses; explicit cheap polls
  * skip the auth refresh and answer from local state only. Returns the public
- * card rows plus the freshness of the answer (see docs/toolchain/offline.md).
+ * card rows plus the freshness of the answer.
  */
 const harnessLifecycleStatus = async (authenticate = true) => {
   const snap = authenticate === false
@@ -444,7 +444,7 @@ const status = async () => {
     // `cache`/`cheap` are local or last-known state served because the
     // authenticated refresh exceeded its budget (it keeps running and warms
     // the next poll). A stale `signedIn` is the last definite verdict, never
-    // a fresh claim - see docs/toolchain/offline.md.
+    // a fresh claim.
     harnessCache: {
       at: harnessSnap?.cache?.at ?? null,
       stale: harnessSnap?.cache?.stale ?? true,
@@ -777,7 +777,7 @@ const page = (authed, mount) => `<!doctype html>
       <span class="tc-brand-sub">setup</span>
     </div>
     <div class="tc-chrome-spacer"></div>
-    ${authed ? `<span class="tc-tag tc-tag--mono" id="build"
+    ${authed ? `<span class="tc-tag tc-tag--mono tc-tag--build" id="build"
       title="Image this container was built from">&mdash;</span>
     <span class="tc-health" id="health" role="status" aria-live="polite">Checking&hellip;</span>` : ""}
     <button type="button" class="tc-iconbtn" id="theme-btn"
@@ -1090,8 +1090,7 @@ const portsStatus = async () => ({
 // rather than holding one request. Auth status is never inferred from install
 // success; it stays whatever the bounded probe reports. Under `--network
 // none` the authenticated read races its budget and falls back to cached or
-// cheap local facts (see the offline-safe status block above and
-// docs/toolchain/offline.md).
+// cheap local facts (see the offline-safe status block above).
 
 const runLifecycle = async (kind, input) => {
   const rawId = input?.id ?? input?.agent ?? "";

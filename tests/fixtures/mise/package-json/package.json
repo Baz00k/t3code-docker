@@ -1,8 +1,0 @@
-{
-  "name": "t3-mise-fixture",
-  "private": true,
-  "packageManager": "npm@10.8.2",
-  "devEngines": {
-    "runtime": { "name": "node", "version": "22.4.0" }
-  }
-}

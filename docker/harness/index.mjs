@@ -8,8 +8,7 @@
 //   const result = await harness.uninstall("grok");
 //
 // `status`/`resolve` are read-only. `install`/`update`/`uninstall` run one at a
-// time under a lock and record the exact version they resolved. See
-// docs/toolchain/harness-api.md.
+// time under a lock and record the exact version they resolved.
 export { createHarnessManager } from "./manager.mjs";
 export {
   CATALOGUE,

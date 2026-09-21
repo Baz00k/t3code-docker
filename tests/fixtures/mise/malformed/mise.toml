@@ -1,3 +1,0 @@
-# Deliberately malformed TOML: mise must fail loudly rather than ignore it.
-[tools]
-node =

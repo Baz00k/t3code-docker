@@ -16,7 +16,7 @@ set -euo pipefail
 # T3 runs through the immutable image infrastructure, never a PATH resolution.
 : "${T3_INFRA_LAUNCHER:=/usr/local/bin/t3-admin}"
 : "${T3_INFRA_NODE:=/usr/local/bin/node}"
-# Provider integration resolver; see docs/toolchain/provider-integration.md.
+# Provider integration resolver.
 : "${T3_PROVIDER_CLI:=/opt/t3-provider/cli.mjs}"
 
 if [ "$(id -u)" -eq 0 ] && command -v gosu >/dev/null 2>&1 && id t3 >/dev/null 2>&1; then
@@ -73,7 +73,7 @@ case "$harness" in
       codex)    bin="$(harness_exec codex)";       args=(login) ;;
       opencode) bin="$(harness_exec opencode)"; args=(auth login) ;;
       # cursor-agent is canonical; the native installer's `agent` alias is
-      # never relied on (see docs/toolchain/provider-contract.md).
+      # never relied on.
       cursor)   bin="$(harness_exec cursor)"; args=(login) ;;
       grok)     bin="$(harness_exec grok)";         args=(login) ;;
     esac

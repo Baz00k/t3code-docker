@@ -39,18 +39,19 @@ page pairs a device and installs and signs in the agents without a shell.
 - **Agents install from the browser.** Claude Code, Codex, OpenCode, Cursor and
   Grok install from the setup page or `t3-harness`, at an exact recorded
   version, and stay on the volume. No agent CLI is baked into the image.
-- **Toolchains on demand.** Go, Rust, Node, Bun, Deno, Python, uv and the rest
-  install through mise per project; clang, CMake, ffmpeg, ImageMagick and psql
-  are in the image.
+- **Toolchains on demand.** Go, Rust, Bun, Deno, uv and per-project Node and
+  Python install through mise; clang, CMake, ffmpeg, ImageMagick and psql are
+  in the image.
 - **Agents can see.** The `browser` variant adds headless Chromium plus
-  Playwright and Chrome DevTools MCP servers, wired into every harness.
+  Playwright and Chrome DevTools MCP servers, wired into Claude Code, Codex
+  and OpenCode.
 - **Show your dev server to your phone.** A port listening in the container is
   reachable from nowhere. Publish it from the setup page or with `t3-expose
   3000` and get a public https URL and a QR code - no DNS, no certificate, no
   port forwarding. Both routes drive the same API, so neither can go stale.
 - **Multi-arch, and actually tested.** `linux/amd64` and `linux/arm64` each
-  built *and* tested on their own native runner — dozens of assertions against
-  a booted container, plus an end-to-end harness lifecycle run, before anything
+  build on their own native runner, and amd64 is booted and asserted against —
+  dozens of checks plus an end-to-end harness lifecycle run — before anything
   is published.
 - **The image says what it is.** The setup page shows the release tag it was
   built from, so a pull can be confirmed rather than assumed.
@@ -64,6 +65,7 @@ page pairs a device and installs and signs in the agents without a shell.
 - [Publishing a port](#publishing-a-port)
 - [Giving agents eyes](#giving-agents-eyes)
 - [Harnesses](#harnesses)
+- [Project toolchains](#project-toolchains)
 - [How long things last](#how-long-things-last)
 - [Configuration](#configuration)
 - [Building](#building)
@@ -81,14 +83,12 @@ docker compose up -d --build
 
 Prebuilt images are published to `ghcr.io/dizys/t3code-docker` — `:latest` and
 `:core` for the default image, `:browser` for the Chromium/MCP variant. They are
-multi-arch manifests covering `linux/amd64` and `linux/arm64`, with each
-architecture built *and* tested on its own native runner, so `docker pull`
-resolves to the right one on an ARM server. (`v0.1.0` predates this and is
+multi-arch manifests covering `linux/amd64` and `linux/arm64`, each built on
+its own native runner, so `docker pull` resolves to the right one on an ARM
+server. (`v0.1.0` predates this and is
 amd64-only.) To run a published image instead of building, set `T3_IMAGE` in
 `.env` and drop `--build`. The historical `:slim` and `:full` tags stay
-pullable and stop receiving updates; see
-[`docs/toolchain/migration.md`](docs/toolchain/migration.md) for moving an
-existing deployment.
+pullable and stop receiving updates; see [Upgrading from `slim`/`full`](#upgrading-from-slimfull).
 
 Then open the setup UI on port **3774**, enter your `T3_SETUP_KEY`, and press
 **Create pairing link**. Scan the QR with the T3 Code app, or open the link in a
@@ -158,8 +158,8 @@ and signs your coding agents in.
 
 The top bar shows which image is running — `v0.5.0 · core` — alongside the
 server's health, so a pull can be confirmed from the page instead of guessed at.
-It reads a build stamp baked in at image build time; a locally built image says
-`dev`, and one built outside CI reports itself as not stamped.
+It reads a build stamp baked in at image build time: the release tag in CI, and
+`dev` for a local build.
 
 Creating a link tracks it: once the device it was made for appears, the panel
 flips to **Paired** with an **Open T3 Code** button, and says so if the link
@@ -454,6 +454,51 @@ and manages its own runtime.
 [`examples/opencode/`](examples/opencode/) — or by pointing a provider instance's
 environment variables at a compatible endpoint.
 
+## Project toolchains
+
+The image carries a Node and a Python for its own machinery, and nothing else.
+Go, Rust, Bun, Deno, uv and the versions your projects actually pin install
+through [mise](https://mise.jdx.dev/), into the persistent home — so the image
+stays small and two projects can want two different Node versions:
+
+```bash
+docker compose exec -u t3 t3code mise install        # in a project with mise.toml
+docker compose exec -u t3 t3code mise use node@22    # records the exact version
+```
+
+mise reads whatever the project already declares — `mise.toml`,
+`.tool-versions`, or idiomatic files like `.nvmrc`, `go.mod` and
+`rust-toolchain.toml`. Terminals opened inside T3 Code get mise activation
+automatically, so an agent that runs `node` in a project directory gets that
+project's Node.
+
+Two policies are worth knowing, both set in `/etc/mise/config.toml`:
+
+- **Nothing updates on its own.** `mise use` records the resolved exact
+  version rather than a floating selector.
+- **No silent fallback.** If mise cannot provide a declared tool it fails
+  rather than quietly running a different one from `PATH`.
+
+Toolchains land in `/home/t3/.local/share/mise` and survive a recreate with the
+rest of the volume. They are not small — a full set of seven runtimes is around
+2 GB — but that weight sits on the volume you already keep, not in every pull.
+
+### Upgrading from `slim`/`full`
+
+The old targets baked agents and runtimes; `core`/`browser` install them on
+demand. Point `.env` at the new names, recreate, then install what you use:
+
+```bash
+T3_IMAGE=ghcr.io/dizys/t3code-docker:latest   # core
+T3_BUILD_TARGET=core                          # or browser
+```
+
+Your state, credentials, threads and projects are untouched — they live on the
+`/home/t3` volume. What no longer exists in the image is the agent CLIs and the
+language runtimes, so install those from the setup page's **Agents** card and
+through mise. The `:slim` and `:full` tags keep their last artifacts and are the
+rollback target if you need one.
+
 ## How long things last
 
 Three different clocks, which is one more than is comfortable:
@@ -526,8 +571,8 @@ project goes with the old one. The container detects this and says so at boot:
 A named volume or a host directory reports the opposite, naming what it found.
 
 Helper commands inside the container: `t3-pair`, `t3-login`, `t3-doctor`,
-`t3-harness`, `t3-browser-mcp`. All of them step down from root automatically,
-so plain `docker compose exec` is safe.
+`t3-harness`, `t3-expose`, `t3-browser-mcp`. All of them step down from root
+automatically, so plain `docker compose exec` is safe.
 
 ## Building
 
@@ -538,11 +583,13 @@ scripts/build.sh --platform linux/amd64,linux/arm64 --push --tag ghcr.io/you/t3c
 scripts/smoke-test.sh t3code:core                # boots it and checks the contract
 ```
 
-The transitional `slim` and `full` targets were removed in the product switch;
-their historical artifacts stay in the registry and stop receiving updates. See
-[`docs/toolchain/migration.md`](docs/toolchain/migration.md) for moving an
-existing deployment and [`docs/toolchain/image-contract.md`](docs/toolchain/image-contract.md)
-for what each target contains.
+`--variant` is how the test scripts know what to assert; it is never guessed
+from whether Chromium is present, so a digest reference needs it spelled out
+(`--variant core t3code@sha256:…`).
+
+The `slim` and `full` targets were replaced by `core`/`browser`; their existing
+artifacts stay in the registry and stop receiving updates. See [Upgrading from
+`slim`/`full`](#upgrading-from-slimfull).
 
 Behind a TLS-intercepting proxy, drop the CA PEM into `ca-certs/` and build with
 `--build-arg APT_HTTPS=true`.
@@ -576,8 +623,9 @@ redeemed: they are one-time, so mint a fresh one per device.
 **A provider is missing in Settings → Providers.** It has to be enabled per
 environment, and signed in on the server. `t3-doctor` shows both.
 
-**Terminals do not open.** `node-pty` builds from source at image build time; a
-build that skipped `build-essential`/`python3` produces this. Rebuild.
+**Terminals do not open.** T3 Code ships `node-pty` prebuilt beside its binary
+in `/opt/t3`; if terminals fail, check `t3-doctor` and the container log rather
+than rebuilding.
 
 **Files in my repo are owned by the wrong user.** Set `PUID`/`PGID` to `id -u` /
 `id -g` on the host and recreate the container.
@@ -592,15 +640,6 @@ in the log. Either drop that setting and select the user with `PUID`/`PGID`, or
 **Chromium crashes.** Give it shared memory: `shm_size: 1gb` (compose already
 does) and keep `--no-sandbox`, which `t3-browser-mcp` passes.
 
-## Design notes
-
-The durable architecture and maintenance contracts live in
-[`docs/toolchain/`](docs/toolchain/): start with
-[`image-contract.md`](docs/toolchain/image-contract.md),
-[`project-execution.md`](docs/toolchain/project-execution.md), and
-[`provider-contract.md`](docs/toolchain/provider-contract.md). `PLAN.md` remains
-the original image research record.
-
 ## Contributing
 
 Issues and pull requests are welcome. Two things worth knowing before you open
@@ -611,12 +650,14 @@ one:
   it against your build (`./scripts/smoke-test.sh t3code:core`) and add an
   assertion for whatever you fixed. Most of the assertions in there exist
   because something shipped broken once.
-- **CI builds and tests both targets on both architectures** before anything is
-  published, so a change that only works on amd64 will be caught.
+- **CI builds both targets on both architectures** before anything is
+  published. amd64 is the platform the checks run against; arm64 is built and
+  published but not separately booted.
 
-Publishing happens on tags only: push `vX.Y.Z` and the workflow builds, smoke
-tests, runs the harness-lifecycle E2E and measures each architecture, pushes the
-tested digests, and stitches them into one manifest. `latest` points at `core`.
+Publishing happens on tags only: push `vX.Y.Z` and the workflow builds each
+target for each architecture, smoke tests and runs the harness-lifecycle E2E
+against the exact pushed amd64 digest, then stitches the tested digests into
+one manifest without rebuilding. `latest` points at `core`.
 
 ## License
 

@@ -1,4 +1,0 @@
-# A version that cannot exist. With not_found_system_fallback = false, explicit
-# mise execution must fail instead of running the image's system Node.
-[tools]
-node = "999.999.999"

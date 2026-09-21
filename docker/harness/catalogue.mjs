@@ -1,5 +1,4 @@
-// The five supported agent harnesses, governed by
-// docs/toolchain/provider-contract.md. This file is data only: every executable
+// The five supported agent harnesses. This file is data only: every executable
 // name, architecture, credential surface, and minimum version the manager
 // enforces comes from here, so the module, the setup console, and the CLI all
 // describe the same harnesses.

@@ -3,7 +3,7 @@
 #
 #   scripts/smoke-test.sh [--variant NAME] [image]      (default: t3code:core)
 #
-# Capability profiles (see docs/toolchain/image-contract.md):
+# Capability profiles:
 #   core     default, installer + mise, no baked harnesses/runtimes/browser
 #   browser  core + Chromium/fonts/MCP servers
 #
@@ -62,9 +62,8 @@ retry() { local n=$1; shift; local i; for i in $(seq 1 "$n"); do
 STATE_MOUNT=""
 PAGE_HTML=""
 CLIENT_JS_COPY=""
-# The layout audit's findings are only worth keeping when it fails, but that is
-# exactly when they matter: the check itself runs with its output discarded, so
-# record them here and print them with the failure summary.
+# The layout audit runs with its output discarded, so record it here and print
+# it with the failure summary.
 UI_AUDIT_LOG="${UI_AUDIT_LOG:-}"
 if [ -z "$UI_AUDIT_LOG" ]; then
   UI_AUDIT_LOG="$(mktemp "${TMPDIR:-/tmp}/t3-ui-audit.XXXXXX")"
@@ -118,28 +117,17 @@ done
 
 printf '\nHarnesses (variant %s)\n' "$VARIANT"
 check "t3 runs" "docker exec $NAME t3 --version"
-# Final images ship the installer, never the executables. The installer and
-# its seams must be present; the baked paths must be absent so a stale
-# fallback cannot masquerade as a managed install.
-for bin in claude codex opencode grok cursor-agent; do
-  check "$bin has no baked executable" \
-    "! docker exec $NAME sh -c 'command -v $bin' >/dev/null 2>&1"
-done
-check "no baked npm harness remains" \
-  "! docker exec $NAME sh -c 'ls /opt/npm-global/bin/claude /opt/npm-global/bin/codex /opt/npm-global/bin/opencode /opt/npm-global/bin/grok 2>/dev/null'"
-check "no baked cursor remains" \
-  "! docker exec $NAME test -x /opt/cursor/.local/bin/cursor-agent"
+# The image ships the installer, never the executables: a baked harness would
+# let a stale copy masquerade as a managed install.
+check "no harness executable is baked" \
+  "! docker exec $NAME sh -c 'command -v claude || command -v codex || command -v opencode || command -v grok || command -v cursor-agent' >/dev/null 2>&1"
 check "mise ships" "docker exec $NAME mise --version"
 check "harness installer ships" "docker exec $NAME t3-harness --help"
 check "provider integration ships" "docker exec $NAME test -r /opt/t3-provider/cli.mjs"
 
-# T3 Code states the versions it needs in its own distribution, and it enforces them
-# at runtime: too old a `gh` and it reports "GitHub CLI is too old to report
-# sign-in status", too old an OpenCode and it refuses the server outright.
-# Debian's gh (2.46) sat below that floor for a while and made the CLI useless.
-# The binary distribution no longer exposes a source bundle to grep, so the
-# Dockerfile's explicit floor is the source of truth and live provider tests
-# prove the surrounding CLI remains usable.
+# T3 Code enforces a minimum `gh` at runtime: too old and it reports "GitHub
+# CLI is too old to report sign-in status". Debian's gh (2.46) sat below that
+# floor and made the CLI useless, so the Dockerfile pin is the source of truth.
 T3_PREFIX="$(docker exec "$NAME" printenv T3_INFRA_PREFIX 2>/dev/null || true)"
 [ -n "$T3_PREFIX" ] || T3_PREFIX=/opt/t3
 T3_BINARY="$(docker exec "$NAME" printenv T3_INFRA_BINARY 2>/dev/null || true)"
@@ -169,13 +157,6 @@ if gh_meets_t3_minimum; then
 else
   no "gh ${GH_INSTALLED:-?} is below the ${GH_DECLARED:-?} T3 Code requires"
 fi
-
-# T3 Code also enforces a minimum OpenCode version, but final images have no
-# baked opencode to hold to it: the harness manager records the resolved exact
-# version on explicit install, and the final-target E2E installs the latest and
-# asserts T3 launches it. Here just prove no stale bake can mask an update.
-check "no baked opencode to hold to a minimum" \
-  "! docker exec $NAME sh -c 'command -v opencode' >/dev/null 2>&1"
 
 # A freshly built image that immediately asks you to upgrade an agent is a bug
 # in this repo, not in the agent. The pins are what go stale, so assert they
@@ -209,17 +190,11 @@ done
 check "postgresql client present" "have psql"
 check "gdb present" "have gdb"
 
-printf '\nBaked language runtimes (none expected in %s)\n' "$VARIANT"
+printf '\nProject runtimes (installed through mise, not baked)\n'
 # Root has no mise shims on PATH by design, so a bare lookup as root only
-# finds a baked runtime. All of these live outside /home/t3 on purpose.
-for bin in go rustc cargo bun deno uv; do
-  check "$bin has no baked runtime" "! docker exec $NAME sh -c 'command -v $bin' >/dev/null 2>&1"
-done
-check "no baked Go tree" "! docker exec $NAME test -e /usr/local/go/bin/go"
-check "no baked Rust tree" "! docker exec $NAME test -e /usr/local/cargo/bin/rustc"
-check "no baked Bun" "! docker exec $NAME test -e /usr/local/bun/bin/bun"
-check "no baked Deno" "! docker exec $NAME test -e /usr/local/deno/bin/deno"
-check "no baked uv" "! docker exec $NAME test -e /usr/local/bin/uv"
+# finds a baked runtime.
+check "no language runtime is baked" \
+  "! docker exec $NAME sh -c 'command -v go || command -v rustc || command -v cargo || command -v bun || command -v deno || command -v uv' >/dev/null 2>&1"
 
 if [ "$HAS_BROWSER" -eq 1 ]; then
   printf '\nBrowser (variant %s)\n' "$VARIANT"
@@ -251,9 +226,8 @@ if [ "$HAS_BROWSER" -eq 1 ]; then
     "docker exec $NAME t3-browser-mcp --server playwright --print | grep -q playwright-mcp"
   check "t3-browser-mcp prints chrome-devtools server" \
     "docker exec $NAME t3-browser-mcp --server chrome-devtools --print | grep -q chrome-devtools-mcp"
-  # No baked harness to register with; the registration path with managed
-  # harnesses is covered by test-provider-integration.sh on the browser
-  # image. Here just prove the helper does not fail without one.
+  # No baked harness to register with, so just prove the helper does not fail
+  # without one; the managed registration path is covered by the E2E.
   check "t3-browser-mcp runs with no baked harness" \
     "docker exec $NAME t3-browser-mcp --harness opencode"
 else
@@ -375,16 +349,11 @@ sys.exit(0 if img.get('version') and img.get('variant') == '$want' else 1)"
 }
 check "the image build is stamped and reported ($VARIANT)" version_is_stamped
 
-# Agent authentication, driven the way the page drives it.
-# Images ship no baked harness, so these flows exercise only what does not need
-# a harness executable: file-backed OpenCode writes, honest unknown states, and
-# the provider catalog. Managed-harness sign-in is covered by
-# test-provider-integration.sh and the final-target E2E.
+# The image ships no harness executable, so these cover what does not need one:
+# file-backed OpenCode writes, honest unknown states, and the provider catalog.
+# Sign-in with a managed harness is covered by the final-target E2E.
 printf '\nAgent authentication (variant %s)\n' "$VARIANT"
 auth_post() { docker exec "$NAME" sh -c "curl -sS -b /tmp/jar -H 'content-type: application/json' -d '$1' http://127.0.0.1:3774$2"; }
-
-check "codex has no baked binary to sign in with" \
-  "! docker exec $NAME sh -c 'command -v codex' >/dev/null 2>&1"
 
 opencode_key_stored() {
   auth_post '{"agent":"opencode","provider":"deepseek","key":"sk-smoke"}' /auth/apikey | grep -q '"ok":true' &&
@@ -395,40 +364,18 @@ check "an API key is written for OpenCode" opencode_key_stored
 check "an unknown agent is refused" \
   "auth_post '{\"agent\":\"bogus\",\"key\":\"x\"}' /auth/apikey | grep -q error"
 
-# Harness executables are not baked, so there is no executable to probe: the
-# manager honestly reports null (unknown) even with an env-var credential.
-# Managed sign-in with an installed harness is covered by the final-target E2E.
-ok "SKIP env-var Claude verdict (no executable to probe in $VARIANT; E2E covers managed)"
-docker rm -f "${NAME}-env" >/dev/null 2>&1 || true
-
-# Reading it correctly once is not enough: a cached verdict would keep saying
-# "not signed in" straight after a key is stored, which is exactly when someone
-# is looking at the panel.
-# With no executable to probe, /status honestly reports null rather than True
-# even after a key is stored (the file write itself is proven by the OpenCode
-# test above). The True flip with a managed install is covered by the E2E.
+# With no executable to probe, the honest verdict is unknown (null) - never a
+# guess from a credentials file. Grok is the reason: a file of exactly the shape
+# its own help text documents still leaves the CLI saying "You are not
+# authenticated". The True flip with a managed install is covered by the E2E.
 uninstalled_reports_unknown() {
   docker exec "$NAME" sh -c \
     "curl -sS --max-time 20 -b /tmp/jar http://127.0.0.1:3774/status" | python3 -c '
 import json, sys
 h = {a["id"]: a for a in json.load(sys.stdin)["harnesses"]}
-sys.exit(0 if h["opencode"]["signedIn"] is None and h["codex"]["signedIn"] is None else 1)'
+sys.exit(0 if all(h[i]["signedIn"] is None for i in ("opencode", "codex", "grok", "cursor")) else 1)'
 }
-check "an uninstalled harness reports unknown (not signed in) in $VARIANT" uninstalled_reports_unknown
-
-# Grok has no status command, and its credentials file proves nothing - a file
-# of exactly the shape its own help text documents still leaves the CLI saying
-# "You are not authenticated". So the reading comes from `grok models`, the way
-# T3 Code does it. With no executable to probe, the honest reading is unknown
-# (null).
-grok_reports_unknown() {
-  docker exec "$NAME" sh -c \
-    "curl -sS --max-time 25 -b /tmp/jar http://127.0.0.1:3774/status" | python3 -c '
-import json, sys
-h = {a["id"]: a for a in json.load(sys.stdin)["harnesses"]}
-sys.exit(0 if h["grok"]["signedIn"] is None and h["cursor"]["signedIn"] is None else 1)'
-}
-check "Grok and Cursor report unknown without an executable in $VARIANT" grok_reports_unknown
+check "an uninstalled harness reports unknown, not signed out" uninstalled_reports_unknown
 
 # OpenCode takes a key per provider and there are over two hundred of them, so
 # the page offers the models.dev catalog rather than asking you to recall an id.
@@ -446,48 +393,11 @@ sys.exit(0 if ok and all(rx.match(i) for i in ids) else 1)'
 }
 check "the provider picker offers a catalog the server accepts" provider_catalog
 
-# Claude renders its URL as an OSC-8 hyperlink wrapped over several lines;
-# scraping the visible text yields a truncated URL missing the PKCE challenge
-# and state, which would send you to a sign-in page that cannot complete.
-# These flows spawn the harness executable, so they need a managed install;
-# the final-target E2E covers them.
-ok "SKIP Claude OAuth URL (no baked harness in $VARIANT)"
-
-# Capturing the URL is half the flow; the code has to get back in. That prompt
-# runs the terminal in raw mode, where Enter arrives as CR - an LF is taken as
-# part of the pasted text and the prompt just sits there, which is what left the
-# panel saying "Submitting" for ever. A rejected code is the only exchange that
-# can be driven without an account, and it proves the same thing: the CLI read
-# the line, tried it, and answered. Stuck on "submitted" means it never did.
-ok "SKIP Claude pasted-code flow (no baked harness in $VARIANT)"
-
-# Waiting for the CLI to exit was the wrong finish line. These are terminal UIs;
-# one that prints its result and stays up is not a failure, but it left the
-# panel on "Submitting" for ever. Completion is "this agent is signed in now",
-# so prove a session notices that with the process still running. Codex is the
-# one whose state can be flipped from outside mid-flow, so use it - signed out
-# first, since only a transition counts.
-ok "SKIP sign-in transition flow (no baked harness in $VARIANT)"
-
-# Codex's default login starts a callback server on localhost:1455, which is
-# unreachable from a browser on any other machine - the redirect lands on the
-# user's own localhost. Any sign-in URL naming localhost is broken by
-# construction for a remote server, so assert against the whole class.
-ok "SKIP Codex device flow (no baked harness in $VARIANT)"
-
-ok "SKIP Grok device flow (no baked harness in $VARIANT)"
-
-# The page's script is built inside a template literal, so an escape can be
-# eaten on the way out and leave the browser with JavaScript that does not
-# parse - which looks like a page that simply never loads its data. Written as
-# a function rather than an eval string: the nested quoting this needs is
-# exactly the kind that dies inside eval, taking the whole run with it.
 # The client script used to be embedded in a template literal in server.mjs,
 # which quietly ate escapes on the way out: `/\s+/` reached the browser as
-# `/s+/` and split agent names on the letter s, and an apostrophe once
-# terminated a string mid-sentence. Neither is a syntax error in the result, so
-# parsing it proves nothing. The invariant worth asserting is stronger and
-# simpler: what the browser receives is byte-for-byte the file on disk.
+# `/s+/` and split agent names on the letter s. That is not a syntax error in
+# the result, so parsing it proves nothing; assert instead that what the
+# browser receives is byte-for-byte the file on disk.
 client_script_is_verbatim() {
   PAGE_HTML="$(mktemp)"; CLIENT_JS_COPY="$(mktemp)"
   docker exec "$NAME" sh -c \
@@ -515,9 +425,8 @@ check "T3 Code is pointed at the shipped binary" \
 
 cloudflared_matches_t3() {
   local want have
-  # The binary distribution has no greppable server bundle. The Dockerfile pin
-  # is the repository-owned compatibility assertion; live port tests below
-  # prove T3 accepts and invokes the shipped executable.
+  # The binary distribution has no greppable server bundle, so the Dockerfile
+  # pin is the compatibility assertion.
   want="$(grep -m1 '^ARG CLOUDFLARED_VERSION=' Dockerfile | cut -d= -f2)"
   have="$(docker exec "$NAME" cloudflared --version 2>/dev/null | awk '{print $3}')"
   CF_WANT="$want"; CF_HAVE="$have"
@@ -585,11 +494,9 @@ check "cloudflared's own metrics port is not offered as a user port" \
   "docker exec $NAME t3-expose | grep -cq 'not published'"
 
 # Screenshots prove the page renders; they do not prove it is square. This
-# measures the rendered geometry - glyphs off centre in their box, a connector
-# that spans a line break, buttons in one group with different heights - across
-# the viewport matrix. Only browser-capable variants carry a browser to do it
-# with; the capability comes from the explicit variant, not from probing for
-# a chromium binary.
+# measures the rendered geometry - glyphs off centre in their box, buttons in
+# one group with different heights - across the viewport matrix. Only the
+# browser variant carries a browser to do it with.
 console_layout_is_clean() {
   [ "$HAS_BROWSER" -eq 1 ] || return 0
   docker exec "$NAME" test -x /usr/bin/chromium 2>/dev/null || return 1

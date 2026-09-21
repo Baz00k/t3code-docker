@@ -172,8 +172,7 @@ wait_health() { # timeout seconds
 }
 
 # Process introspection has to happen inside the container; the server drops
-# privileges with gosu, so `exe` is only readable as the user it runs as
-# (same technique as test-infrastructure.sh).
+# privileges with gosu, so `exe` is only readable as the user it runs as.
 proc_exe()     { docker exec -u t3 "$NAME" readlink -f "/proc/$1/exe"; }
 proc_cmdline() { docker exec "$NAME" sh -c "tr '\0' ' ' < /proc/$1/cmdline"; }
 find_pid() {

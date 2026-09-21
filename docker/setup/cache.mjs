@@ -1,7 +1,7 @@
 // Offline-safe cache helpers for the setup console.
 //
 // `/status` and `/providers` must each answer within five seconds with no
-// network (see docs/toolchain/offline.md). The strategy is the same for both:
+// network. The strategy is the same for both:
 // serve bundled or cached state immediately, refresh asynchronously, and
 // coalesce concurrent refreshes so background work never accumulates.
 //

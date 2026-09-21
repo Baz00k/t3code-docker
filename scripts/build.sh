@@ -23,7 +23,7 @@ Usage: scripts/build.sh [options] [-- extra docker build args]
   --platform LIST   e.g. linux/amd64,linux/arm64 (implies buildx)
   --push            push instead of loading locally
 
-  Capability profiles (see docs/toolchain/image-contract.md):
+  Capability profiles:
     core     default, no baked harnesses/runtimes, non-browser OS packages + mise
     browser  core + Chromium/fonts/MCP servers
 

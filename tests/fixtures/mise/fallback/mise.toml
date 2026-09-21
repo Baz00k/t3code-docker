@@ -1,5 +1,0 @@
-# Pins an uninstalled version of a tool that does exist on the system PATH
-# (/usr/bin/jq). With auto-install disabled for the test, mise must fail rather
-# than silently run the system jq.
-[tools]
-jq = "1.7.1"

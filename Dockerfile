@@ -11,8 +11,7 @@
 #
 # Build:  docker build --target core -t t3code:core .
 #         docker build --target browser -t t3code:browser .
-# See README.md for the runtime contract and docs/toolchain/image-contract.md
-# for the authoritative target profiles.
+# See README.md for the runtime contract and the target profiles.
 
 ARG NODE_IMAGE=node:24-trixie-slim
 
@@ -162,7 +161,7 @@ RUN chmod 0644 /etc/profile.d/t3-user-env.sh
 # recreation without widening root's environment. docker/mise/config.toml lands
 # at /etc/mise/config.toml: the lowest-precedence config every user and every
 # `docker exec` reads, carrying the execution policy and the generated
-# idiomatic allowlist. See docs/toolchain/project-execution.md.
+# idiomatic allowlist.
 ARG MISE_VERSION=2026.9.10
 COPY docker/mise/ /opt/mise/
 RUN set -eux; \
