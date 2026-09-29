@@ -139,11 +139,11 @@ FROM base AS slim
 # Pinned so a rebuild is reproducible; `scripts/bump-versions.sh` refreshes them
 # against the registries, and CI opens a PR when one falls behind. Any of these
 # also accepts `latest` as a build arg when you want the newest at build time.
-ARG T3_VERSION=0.0.40
-ARG CLAUDE_CODE_VERSION=2.1.270
-ARG CODEX_VERSION=0.154.0
-ARG OPENCODE_VERSION=1.18.30
-ARG GROK_VERSION=1.0.30
+ARG T3_VERSION=0.0.44
+ARG CLAUDE_CODE_VERSION=2.1.285
+ARG CODEX_VERSION=0.159.1
+ARG OPENCODE_VERSION=1.18.33
+ARG GROK_VERSION=1.0.44
 
 # node-pty has no Linux prebuilds and compiles here; build-essential and
 # python3 (installed above) are what make that work.
@@ -292,8 +292,8 @@ RUN set -eux; \
 
 # Browser automation over MCP. T3 Code's own preview tools are hosted by the
 # web/desktop client, so a phone-only setup has no eyes without this.
-ARG CHROME_DEVTOOLS_MCP_VERSION=1.9.0
-ARG PLAYWRIGHT_MCP_VERSION=0.0.80
+ARG CHROME_DEVTOOLS_MCP_VERSION=1.10.1
+ARG PLAYWRIGHT_MCP_VERSION=0.0.83
 ENV CHROME_PATH=/usr/bin/chromium \
     CHROME_BIN=/usr/bin/chromium \
     PUPPETEER_SKIP_DOWNLOAD=1 \
