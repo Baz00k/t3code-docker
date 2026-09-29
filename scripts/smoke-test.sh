@@ -82,10 +82,13 @@ done
 # the bundle and hold the image to it. If upstream raises a minimum, this fails
 # on the next build rather than in someone's session.
 # T3 0.0.41 replaced the Node bundle with a launcher plus a platform binary,
-# and the floors moved into that binary. Resolve it wherever it landed; the
+# and the floors moved into that binary. npm nests the platform package under
+# t3 on a global install but hoists it on a local one, so check both. The
 # greps read it with -a because it is an executable.
 T3_BUNDLE="$(docker exec "$NAME" sh -c \
-  'ls /opt/npm-global/lib/node_modules/@t3code/t3-*/t3 2>/dev/null | head -1')"
+  'ls /opt/npm-global/lib/node_modules/@t3code/t3-*/t3 \
+      /opt/npm-global/lib/node_modules/t3/node_modules/@t3code/t3-*/t3 \
+      2>/dev/null | head -1')"
 [ -n "$T3_BUNDLE" ] || T3_BUNDLE=/opt/npm-global/lib/node_modules/t3/dist/bin.mjs
 
 # Compares with sort -V: passes when installed >= required.

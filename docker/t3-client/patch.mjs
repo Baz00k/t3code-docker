@@ -19,14 +19,20 @@ import { existsSync, readFileSync, readdirSync, writeFileSync } from "node:fs";
 
 const MODULES = "/opt/npm-global/lib/node_modules";
 const LEGACY = `${MODULES}/t3/dist/client/index.html`;
+// npm hoists the platform package on a local install but nests it under t3 on
+// a global one; the image is a global install, so check both.
+const SCOPED_ROOTS = [
+  `${MODULES}/@t3code`,
+  `${MODULES}/t3/node_modules/@t3code`,
+];
 
 const resolveShell = () => {
   if (process.env.T3_CLIENT_SHELL) return process.env.T3_CLIENT_SHELL;
   if (existsSync(LEGACY)) return LEGACY;
-  const scoped = `${MODULES}/@t3code`;
-  if (existsSync(scoped)) {
-    for (const pkg of readdirSync(scoped)) {
-      const candidate = `${scoped}/${pkg}/client/index.html`;
+  for (const root of SCOPED_ROOTS) {
+    if (!existsSync(root)) continue;
+    for (const pkg of readdirSync(root)) {
+      const candidate = `${root}/${pkg}/client/index.html`;
       if (existsSync(candidate)) return candidate;
     }
   }
