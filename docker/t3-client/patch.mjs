@@ -11,13 +11,32 @@
 // The paths can be overridden for a local dry run:
 //   T3_CLIENT_SHELL=/tmp/index.html T3_SETUP_PILL=docker/t3-client/setup-pill.js \
 //     node docker/t3-client/patch.mjs
-import { readFileSync, writeFileSync } from "node:fs";
+//
+// T3 0.0.41 moved the client out of the npm package: `t3` became a launcher
+// for a platform binary, and the shell now ships in @t3code/t3-<os>-<arch>.
+// Resolve whichever layout is installed instead of pinning one path.
+import { existsSync, readFileSync, readdirSync, writeFileSync } from "node:fs";
 
-const SHELL = process.env.T3_CLIENT_SHELL
-  || "/opt/npm-global/lib/node_modules/t3/dist/client/index.html";
+const MODULES = "/opt/npm-global/lib/node_modules";
+const LEGACY = `${MODULES}/t3/dist/client/index.html`;
+
+const resolveShell = () => {
+  if (process.env.T3_CLIENT_SHELL) return process.env.T3_CLIENT_SHELL;
+  if (existsSync(LEGACY)) return LEGACY;
+  const scoped = `${MODULES}/@t3code`;
+  if (existsSync(scoped)) {
+    for (const pkg of readdirSync(scoped)) {
+      const candidate = `${scoped}/${pkg}/client/index.html`;
+      if (existsSync(candidate)) return candidate;
+    }
+  }
+  return LEGACY; // let the read below fail naming the path everyone knows
+};
+
 const PILL = process.env.T3_SETUP_PILL
   || "/usr/local/share/t3-client/setup-pill.js";
 const MARKER = "t3-setup-pill";
+const SHELL = resolveShell();
 
 const html = readFileSync(SHELL, "utf8");
 

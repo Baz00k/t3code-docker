@@ -81,7 +81,12 @@ done
 # inside T3 Code without anything here noticing, so read the floor back out of
 # the bundle and hold the image to it. If upstream raises a minimum, this fails
 # on the next build rather than in someone's session.
-T3_BUNDLE=/opt/npm-global/lib/node_modules/t3/dist/bin.mjs
+# T3 0.0.41 replaced the Node bundle with a launcher plus a platform binary,
+# and the floors moved into that binary. Resolve it wherever it landed; the
+# greps read it with -a because it is an executable.
+T3_BUNDLE="$(docker exec "$NAME" sh -c \
+  'ls /opt/npm-global/lib/node_modules/@t3code/t3-*/t3 2>/dev/null | head -1')"
+[ -n "$T3_BUNDLE" ] || T3_BUNDLE=/opt/npm-global/lib/node_modules/t3/dist/bin.mjs
 
 # Compares with sort -V: passes when installed >= required.
 version_at_least() {
@@ -91,7 +96,7 @@ version_at_least() {
 gh_meets_t3_minimum() {
   local declared installed
   declared="$(docker exec "$NAME" sh -c \
-    "grep -o 'Update .gh. to [0-9][0-9.]* or newer' $T3_BUNDLE | head -1" 2>/dev/null \
+    "grep -a -o 'Update .gh. to [0-9][0-9.]* or newer' $T3_BUNDLE | head -1" 2>/dev/null \
     | grep -o '[0-9][0-9.]*' | head -1)"
   # Fall back to the floor the Dockerfile asserts if the wording moved.
   [ -n "$declared" ] || declared="$(grep -m1 '^ARG GH_MIN_VERSION=' Dockerfile | cut -d= -f2)"
@@ -109,7 +114,7 @@ fi
 opencode_meets_t3_minimum() {
   local declared installed
   declared="$(docker exec "$NAME" sh -c \
-    "grep -o 'MINIMUM_OPENCODE_VERSION *= *\"[0-9][0-9.]*\"' $T3_BUNDLE | head -1" 2>/dev/null \
+    "grep -a -o 'MINIMUM_OPENCODE_VERSION *= *\"[0-9][0-9.]*\"' $T3_BUNDLE | head -1" 2>/dev/null \
     | grep -o '[0-9][0-9.]*' | head -1)"
   [ -n "$declared" ] || return 0   # nothing declared upstream, nothing to hold to
   installed="$(docker exec "$NAME" opencode --version 2>/dev/null | tr -d '\r' | head -1)"
