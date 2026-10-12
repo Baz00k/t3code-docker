@@ -2,17 +2,17 @@ name: t3code
 
 services:
   t3code:
-    image: ${T3_IMAGE:-t3code:full}
+    image: ${T3_IMAGE:-t3code:browser}
     build:
       context: .
-      target: ${T3_BUILD_TARGET:-full}
+      target: ${T3_BUILD_TARGET:-browser}
     container_name: t3code
     restart: unless-stopped
     hostname: ${T3_HOSTNAME:-t3code}
     environment:
-      # Public address clients reach this server on. `t3-pair` builds its
-      # pairing links from this; without it the links point at the container's
-      # own bridge address and nothing can use them.
+      # Public address clients reach this server on, which pairing links point
+      # at. Optional: leave it empty to set it on the setup page instead, where
+      # it takes effect without a restart. Set here, it is fixed.
       T3_PUBLIC_URL: ${T3_PUBLIC_URL:-}
       # Match these to the owner of your workspace bind mount.
       PUID: ${PUID:-1000}
@@ -21,18 +21,30 @@ services:
       T3_ALLOW_SUDO: ${T3_ALLOW_SUDO:-0}
       T3_AUTO_ADD_PROJECTS: ${T3_AUTO_ADD_PROJECTS:-1}
       T3_PRINT_PAIRING_ON_START: ${T3_PRINT_PAIRING_ON_START:-0}
+      # What to install onto the volume on first start, in the background:
+      # all (the five agents plus Go, Rust, Bun, Deno, uv), agents,
+      # toolchains, source-control (glab, fj, tea, az; never part of all),
+      # a list such as claude,codex,go,glab, or none. They combine:
+      # all,source-control adds the source control CLIs to all.
+      T3_PREINSTALL: ${T3_PREINSTALL:-all}
+      T3_PERSIST_AGENT_CREDENTIALS: ${T3_PERSIST_AGENT_CREDENTIALS:-1}
       # Used by the DeepSeek-through-OpenCode example. Keys for the harnesses
       # themselves belong in T3 Code's per-provider-instance environment
       # (Settings > Providers), where they stay isolated per instance and can
       # be marked sensitive - not in a variable every process here inherits.
       DEEPSEEK_API_KEY: ${DEEPSEEK_API_KEY:-}
       # Password for the setup UI on port 3774, which mints pairing links on
-      # demand. Leave empty and one is generated at boot and printed to the log.
+      # demand. Leave empty and the first start generates one, keeps it on the
+      # volume, and prints it to the log on every start.
       T3_SETUP_KEY: ${T3_SETUP_KEY:-}
       T3_SETUP_ENABLED: ${T3_SETUP_ENABLED:-1}
       # Serve the setup UI under a path prefix, so one public hostname can
       # route e.g. /__setup* here instead of needing a second subdomain.
       T3_SETUP_BASE_PATH: ${T3_SETUP_BASE_PATH:-}
+      # Also serve T3 Code and the setup page together on this one port (the
+      # setup page under /__setup), for a tunnel, proxy or hosting platform
+      # that routes a single port. Publish it in place of the two below.
+      T3_SINGLE_PORT: ${T3_SINGLE_PORT:-}
       T3_PAIR_TTL: ${T3_PAIR_TTL:-30d}
     volumes:
       # State, provider credentials, shell history - everything under ~.

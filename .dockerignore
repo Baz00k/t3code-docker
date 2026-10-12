@@ -5,6 +5,7 @@
 .env.example
 compose.yaml
 scripts
+tests
+docs
 workspace
-PLAN.md
 README.md

@@ -1,0 +1,32 @@
+#!/bin/bash
+# Run T3 Code through the image's fixed infrastructure launcher.
+#
+# T3 executes the bundled platform binary, or the verified exact release
+# selected by Setup on the volume. Never resolve it through a project
+# toolchain, a mise shim, or an npm launcher's env-node shim. Every call in this
+# image (the entrypoint, setup console, t3-pair, t3-login, t3-doctor) goes
+# through here, and `/usr/local/bin/t3` is a symlink to it, so there is exactly
+# one resolution rule. Both the resolver and its Node runtime use fixed paths.
+#
+# The locations can be overridden for tests.
+set -euo pipefail
+
+# Never execute a volume-selected binary as root. The image's fixed gosu
+# drops privileges before reading the selection, just as other helpers do.
+if [ "$EUID" -eq 0 ] && [ -x /usr/sbin/gosu ]; then
+  exec /usr/sbin/gosu t3 "$0" "$@"
+fi
+
+prefix="${T3_INFRA_PREFIX:-/opt/t3}"
+binary="${T3_INFRA_BINARY:-${prefix}/t3}"
+resolver="${T3_RUNTIME_RESOLVER:-/opt/t3-runtime/resolve.mjs}"
+if [ -f "$resolver" ] && [ "$EUID" -ne 0 ]; then
+  binary="$("${T3_INFRA_NODE:-/usr/local/bin/node}" "$resolver")"
+fi
+
+if [ ! -x "$binary" ]; then
+  printf 't3-admin: T3 platform binary not found at %s\n' "$binary" >&2
+  exit 127
+fi
+
+exec "$binary" "$@"

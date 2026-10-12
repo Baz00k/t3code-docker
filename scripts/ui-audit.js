@@ -11,9 +11,14 @@
  *
  *   node scripts/ui-audit.js [url] [key]
  *
+ * Every route is measured at every viewport, and so are the overlays a person
+ * opens most: a row's menu (a bottom sheet on a phone), the uninstall dialog,
+ * the command palette and the pairing ceremony. Then again embedded, as T3
+ * Code's settings open the console in a dialog.
+ *
  * Exits non-zero when it finds something.
  */
-// Runs from a checkout with playwright installed, or inside the full image,
+// Runs from a checkout with playwright installed, or inside the browser image,
 // which already carries playwright-core and a chromium for the browser MCP.
 let chromium;
 try {
@@ -24,12 +29,25 @@ try {
 
 const URL = process.argv[2] || "http://127.0.0.1:13775/";
 const KEY = process.argv[3] || "k";
+// A disposable paired session created by the smoke test. Only this explicit
+// fixture is renamed; running the geometry audit alone never edits a device.
+const DEVICE_ID = process.env.T3_UI_AUDIT_DEVICE_ID || "";
+const DEVICE_LABEL = 'Work phone <not markup> & "desk"';
+const DEVICE_LONG_LABEL = 'W'.repeat(64);
 const CHROME = process.env.CHROME_PATH
   || (require("node:fs").existsSync("/usr/bin/chromium") ? "/usr/bin/chromium"
       : "/opt/pw-browsers/chromium-1194/chrome-linux/chrome");
 
 // Viewports worth checking: the narrowest phone, the split point, and a desktop.
 const VIEWPORTS = [[360, 800], [390, 844], [820, 1180], [1100, 1000], [1440, 900]];
+// And the console as T3 Code's settings show it, in a dialog: on a phone, where
+// the dialog fills the screen, and at the dialog's own size on a desktop.
+const EMBEDDED = [[390, 844], [1198, 878]];
+const embedded = (url) => { const u = new globalThis.URL(url); u.searchParams.set("embed", "t3"); return u.href; };
+const RUNS = [
+  ...VIEWPORTS.map((viewport) => ({ url: URL, viewport, tag: "" })),
+  ...EMBEDDED.map((viewport) => ({ url: embedded(URL), viewport, tag: " embedded" })),
+];
 
 const audit = () => {
   const findings = [];
@@ -51,8 +69,15 @@ const audit = () => {
   };
 
   // -- 1. content clipped by its own box -----------------------------------
+  // The empty state's icon fans two cards out behind it (its wrapper's
+  // pseudo-elements, drawn outside the box by design), which reads as overflow here.
+  const DRAWN_OUTSIDE = ".tc-empty-media";
   for (const el of document.querySelectorAll("body *")) {
-    if (!visible(el)) continue;
+    if (!visible(el) || el.matches(DRAWN_OUTSIDE)) continue;
+    // Native text controls scroll a long value inside their editing viewport.
+    // scrollWidth measures that value, not content painted outside the field;
+    // the surrounding layout and the field's actual box are still measured.
+    if (el.matches("input, textarea")) continue;
     const style = getComputedStyle(el);
     if (style.overflowX !== "visible" && style.overflowX !== "clip") continue;
     if (el.scrollWidth - el.clientWidth > 1 && el.clientWidth > 0) {
@@ -99,7 +124,7 @@ const audit = () => {
   }
 
   // -- 3. glyphs that are not optically centred in a fixed box --------------
-  for (const el of document.querySelectorAll(".tc-step-mark, .tc-tile, .tc-iconbtn")) {
+  for (const el of document.querySelectorAll(".tc-step-mark, .tc-check-mark, .tc-tile:not(.tc-tile--icon)")) {
     if (!visible(el)) continue;
     const node = [...el.childNodes].find((n) => n.nodeType === 3 && n.textContent.trim());
     if (!node) continue;
@@ -120,8 +145,9 @@ const audit = () => {
   // -- 4. siblings that should match but do not ----------------------------
   const groups = [
     [".tc-step-mark", "step marks"],
-    [".tc-tile", "agent tiles"],
-    [".tc-iconbtn", "icon buttons"],
+    [".tc-check-mark", "checklist marks"],
+    [".tc-tile:not(.tc-tile--port)", "tiles"],
+    [".tc-btn--icon", "icon buttons"],
   ];
   for (const [sel, label] of groups) {
     // Compare only within a shared parent: a 22px copy affordance in the status
@@ -154,7 +180,7 @@ const audit = () => {
   // -- 4b. same-class siblings in one list with different padding ----------
   // "The padding around X is off" is usually one element in a list disagreeing
   // with its neighbours rather than the whole scale being wrong.
-  for (const list of document.querySelectorAll(".tc-list, .tc-deck-col, .tc-details")) {
+  for (const list of document.querySelectorAll(".tc-list, .tc-checklist, .tc-readouts, .tc-sheet-actions")) {
     const kids = [...list.children].filter(visible);
     if (kids.length < 2) continue;
     const pad = (e) => {
@@ -178,21 +204,48 @@ const audit = () => {
   }
 
   // -- 5. buttons in one action group with different heights ---------------
-  for (const group of document.querySelectorAll(".tc-row-actions, .tc-dialog-foot")) {
+  for (const group of document.querySelectorAll(".tc-row-actions, .tc-dialog-foot, .tc-sheet-foot, .tc-topbar-actions")) {
     const btns = [...group.querySelectorAll(".tc-btn")].filter(visible);
     if (btns.length < 2) continue;
     const hs = new Set(btns.map((b) => Math.round(box(b).height * 100) / 100));
     if (hs.size > 1) {
       add("uneven-buttons", `heights ${[...hs].join(", ")} in one group`, group);
     }
-    const tops = new Set(btns.map((b) => Math.round(box(b).top)));
-    if (tops.size > 1) add("unaligned-buttons", `tops ${[...tops].join(", ")}`, group);
+    // Groups that opt into wrapping (the Agents card says so in its class, and
+    // its comment says wrapping beats squeezing the name column) are measured
+    // per visual line: buttons that share a line must share a top, and a
+    // button on the next line is the intended layout rather than a defect.
+    // Every other group must still stay on one line.
+    // A group laid out as a column stacks its buttons on purpose (a dialog's
+    // foot on a phone): they must line up down the left and share a width.
+    if (/^column/.test(getComputedStyle(group).flexDirection)) {
+      const lefts = new Set(btns.map((b) => Math.round(box(b).left)));
+      const widths = new Set(btns.map((b) => Math.round(box(b).width)));
+      if (lefts.size > 1 || widths.size > 1) {
+        add("uneven-stack", `lefts ${[...lefts].join(", ")} / widths ${[...widths].join(", ")}`, group);
+      }
+    } else if (group.classList.contains("tc-row-actions--wrap")) {
+      const lines = [];
+      for (const b of btns) {
+        const top = box(b).top;
+        const line = lines.find((l) => Math.abs(l.top - top) <= 2);
+        if (line) line.btns.push(b);
+        else lines.push({ top, btns: [b] });
+      }
+      for (const line of lines) {
+        const tops = new Set(line.btns.map((b) => Math.round(box(b).top)));
+        if (tops.size > 1) add("unaligned-buttons", `tops ${[...tops].join(", ")} in one line`, group);
+      }
+    } else {
+      const tops = new Set(btns.map((b) => Math.round(box(b).top)));
+      if (tops.size > 1) add("unaligned-buttons", `tops ${[...tops].join(", ")}`, group);
+    }
   }
 
-  // -- 6. a row's text baseline vs its chip ---------------------------------
-  for (const line of document.querySelectorAll(".tc-row-nameline")) {
+  // -- 6. a row's text baseline vs its badge ---------------------------------
+  for (const line of document.querySelectorAll(".tc-row-title")) {
     const name = line.querySelector(".tc-row-name");
-    const chip = line.querySelector(".tc-chip");
+    const chip = line.querySelector(".tc-badge");
     if (!name || !chip || !visible(name) || !visible(chip)) continue;
     const a = box(name), c = box(chip);
     // A nameline that wrapped puts the chip on its own line on purpose; only
@@ -200,7 +253,22 @@ const audit = () => {
     if (Math.abs(c.top - a.top) > a.height) continue;
     const dy = (c.top + c.height / 2) - (a.top + a.height / 2);
     if (Math.abs(dy) > 1.5) {
-      add("chip-misaligned", `chip centre is ${dy.toFixed(2)}px off the name centre`, line);
+      add("chip-misaligned", `badge centre is ${dy.toFixed(2)}px off the name centre`, line);
+    }
+  }
+
+  // -- 7. nothing wider than the screen -------------------------------------
+  // A page that scrolls sideways on a phone is broken whatever else is right.
+  if (document.documentElement.scrollWidth > window.innerWidth + 1) {
+    add("horizontal-scroll", `page is ${document.documentElement.scrollWidth}px wide in a ${window.innerWidth}px viewport`, document.body);
+  }
+
+  // -- 8. overlays inside the viewport ---------------------------------------
+  for (const panel of document.querySelectorAll(".tc-layer > :not(.tc-backdrop)")) {
+    if (!visible(panel)) continue;
+    const r = box(panel);
+    if (r.left < -0.5 || r.top < -0.5 || r.right > window.innerWidth + 0.5 || r.bottom > window.innerHeight + 0.5) {
+      add("overlay-offscreen", `${Math.round(r.left)},${Math.round(r.top)} ${Math.round(r.width)}x${Math.round(r.height)} in ${window.innerWidth}x${window.innerHeight}`, panel);
     }
   }
 
@@ -214,33 +282,196 @@ const audit = () => {
   });
   let total = 0;
 
-  for (const [width, height] of VIEWPORTS) {
-    const ctx = await browser.newContext({ viewport: { width, height }, deviceScaleFactor: 2 });
-    const page = await ctx.newPage();
-    await page.goto(URL, { waitUntil: "domcontentloaded" });
-    await page.fill("input[type=password]", KEY);
-    await page.click("button[type=submit]");
-    await page.waitForSelector("#agents .tc-row-name", { timeout: 60000 });
-    // A container with nothing listening renders the empty state, not a row;
-    // either means the card has finished its first paint.
-    await page.waitForSelector("#ports .tc-row, #ports .tc-empty", { timeout: 60000 });
-    // The pairing panel is where the tracker lives, so open it.
-    await page.click("#mint");
-    await page.waitForSelector("#out .tc-steps", { timeout: 30000 });
-    await page.waitForTimeout(400);
+  // What to measure at each size: every route, then the overlays.
+  const ROUTES = ["overview", "devices", "agents", "toolchains", "sourcecontrol", "ports", "environment", "more"];
+  /** A host page on the console's origin holding the console in a frame; the frame, with the page's keyboard. */
+  const framed = async (page, url) => {
+    const host = new globalThis.URL("/__ui-audit-host", url).href;
+    await page.route(host, (route) => route.fulfill({
+      contentType: "text/html",
+      body: `<!doctype html><style>html,body{margin:0;height:100%}iframe{display:block;border:0;width:100%;height:100%}</style><iframe src="${url}"></iframe>`,
+    }));
+    await page.goto(host, { waitUntil: "domcontentloaded" });
+    const frame = await (await page.waitForSelector("iframe")).contentFrame();
+    await frame.waitForSelector("input[type=password]", { timeout: 60000 });
+    return new Proxy(frame, {
+      get: (f, key) => (key === "keyboard" ? page.keyboard : typeof f[key] === "function" ? f[key].bind(f) : f[key]),
+    });
+  };
 
-    const findings = await page.evaluate(audit);
-    const label = `${width}x${height}`;
-    if (!findings.length) {
-      console.log(`  ${label.padEnd(10)} clean`);
-    } else {
-      console.log(`  ${label.padEnd(10)} ${findings.length} finding(s)`);
+  const settle = async (page) => {
+    // Text metrics decide the boxes this audit compares, so wait for fonts,
+    // then let the browser render two frames of the settled layout.
+    await page.evaluate(() => document.fonts.ready);
+    await page.evaluate(() => new Promise((resolve) => {
+      requestAnimationFrame(() => requestAnimationFrame(resolve));
+    }));
+    await page.waitForTimeout(300);
+  };
+  const STATES = [
+    ...ROUTES.map((route) => [route, async (page) => {
+      await page.evaluate((r) => { location.hash = r; }, route);
+      await page.waitForSelector(`#page-${route}:not([hidden]) .tc-section, #page-${route}:not([hidden]) .tc-group`, { timeout: 60000 });
+    }]),
+    ["rename device", async (page) => {
+      if (!DEVICE_ID) return;
+      await page.evaluate(() => { location.hash = "devices"; });
+      await page.click(`[data-cmd="device.rename"][data-id="${DEVICE_ID}"]`);
+      await page.waitForSelector(".tc-layer #device-label");
+      const layout = await page.evaluate(() => {
+        const form = document.querySelector('.tc-device-rename');
+        const box = form.getBoundingClientRect();
+        const field = form.querySelector('#device-label');
+        const actions = [...form.querySelectorAll('.tc-device-rename-foot .tc-btn')];
+        return { width: innerWidth, height: innerHeight, x: box.x, y: box.y, w: box.width, h: box.height,
+          input: field.getBoundingClientRect().height, actions: actions.map(b => b.getBoundingClientRect().height),
+          saveDisabled: form.querySelector('[data-key="device-save"]').disabled, focused: document.activeElement === field };
+      });
+      if (!layout.saveDisabled || !layout.focused) throw new Error('Renaming should focus the label and wait for a change before saving');
+      if (layout.width >= 1024) {
+        if (layout.w > 480 || layout.h > 420 || Math.abs(layout.x + layout.w / 2 - layout.width / 2) > 2
+          || Math.abs(layout.y + layout.h / 2 - layout.height / 2) > 2) throw new Error('Desktop renaming should use a compact, centred dialog');
+      } else if (Math.abs(layout.y + layout.h - layout.height) > 2 || layout.input < 44 || layout.actions.some(h => h < 44)) {
+        throw new Error('Touch renaming should use a bottom sheet with comfortable input and action targets');
+      }
+    }],
+    ["renamed device", async (page) => {
+      if (!DEVICE_ID) return;
+      await page.fill(".tc-layer #device-label", DEVICE_LABEL);
+      await page.click('.tc-layer [data-key="device-save"]');
+      await page.waitForSelector(".tc-layer", { state: "detached" });
+      await page.waitForFunction(([id, label]) => document.querySelector(`[data-key="dev-${id}"] .tc-row-name`)?.textContent === label, [DEVICE_ID, DEVICE_LABEL]);
+    }],
+    ["long device label", async (page) => {
+      if (!DEVICE_ID) return;
+      await page.click(`[data-cmd="device.rename"][data-id="${DEVICE_ID}"]`);
+      await page.waitForSelector(".tc-layer #device-label");
+      if (await page.inputValue(".tc-layer #device-label") !== DEVICE_LABEL) throw new Error("The rename field lost the saved label");
+      await page.fill(".tc-layer #device-label", DEVICE_LONG_LABEL);
+      await page.click('.tc-layer [data-key="device-save"]');
+      await page.waitForSelector(".tc-layer", { state: "detached" });
+      await page.waitForFunction(([id, label]) => document.querySelector(`[data-key="dev-${id}"] .tc-row-name`)?.textContent === label, [DEVICE_ID, DEVICE_LONG_LABEL]);
+    }],
+    ["rename long label", async (page) => {
+      if (!DEVICE_ID) return;
+      await page.click(`[data-cmd="device.rename"][data-id="${DEVICE_ID}"]`);
+      await page.waitForSelector(".tc-layer #device-label");
+      if (await page.inputValue(".tc-layer #device-label") !== DEVICE_LONG_LABEL) throw new Error("The rename field lost a maximum-length label");
+    }],
+    ["restored device", async (page) => {
+      if (!DEVICE_ID) return;
+      await page.fill(".tc-layer #device-label", "");
+      await page.click('.tc-layer [data-key="device-save"]');
+      await page.waitForSelector(".tc-layer", { state: "detached" });
+      await page.waitForFunction(([id, label]) => {
+        const row = document.querySelector(`[data-key="dev-${id}"] .tc-row-name`);
+        return row && row.textContent !== label;
+      }, [DEVICE_ID, DEVICE_LONG_LABEL]);
+    }],
+    ["row menu", async (page) => {
+      await page.evaluate(() => { location.hash = "agents"; });
+      await page.waitForSelector("#page-agents [data-cmd='row.menu']", { timeout: 60000 });
+      // The first installed agent's menu: a missing one has no Uninstall to
+      // open the dialog with.
+      for (const trigger of await page.$$("#page-agents [data-cmd='row.menu']")) {
+        await trigger.click();
+        await page.waitForSelector(".tc-layer .tc-menu, .tc-layer .tc-sheet");
+        if (await page.$(".tc-layer .tc-menu-item--danger")) return;
+        await page.keyboard.press("Escape");
+        await page.waitForSelector(".tc-layer", { state: "detached" });
+      }
+    }],
+    ["uninstall dialog", async (page) => {
+      const uninstall = await page.$(".tc-layer .tc-menu-item--danger");
+      if (!uninstall) return;
+      await uninstall.click();
+      await page.waitForSelector(".tc-layer .tc-dialog");
+    }],
+    ["palette", async (page) => {
+      await page.keyboard.press("Escape");
+      await page.keyboard.press("Control+k");
+      await page.waitForSelector(".tc-layer .tc-palette");
+      await page.keyboard.type("pub");
+    }],
+    ["add a tool", async (page) => {
+      await page.keyboard.press("Escape");
+      await page.evaluate(() => { location.hash = "toolchains"; });
+      await page.click("#page-toolchains [data-cmd='package.add'] >> nth=0");
+      await page.waitForSelector(".tc-layer #tool-list .tc-option, .tc-layer .tc-combobox-note", { timeout: 30000 });
+      await page.keyboard.type("kube");
+    }],
+    ["tool spec hint", async (page) => {
+      await page.fill(".tc-layer #tool-q", "npm:");
+      await page.waitForSelector(".tc-layer .tc-combobox-note--stack", { timeout: 30000 });
+    }],
+    ["agent release", async (page) => {
+      await page.keyboard.press("Escape");
+      await page.evaluate(() => { location.hash = "agents"; });
+      await page.waitForSelector("#page-agents [data-cmd='row.menu']", { timeout: 60000 });
+      await page.click("#page-agents [data-cmd='row.menu'] >> nth=0");
+      await page.waitForSelector(".tc-layer .tc-menu-item");
+      await page.click(".tc-layer .tc-menu-item:has-text('specific version')");
+      await page.waitForSelector(".tc-layer #ver-list .tc-option, .tc-layer .tc-combobox-note", { timeout: 30000 });
+    }],
+    ["pairing", async (page) => {
+      await page.keyboard.press("Escape");
+      await page.evaluate(() => { location.hash = "devices"; });
+      await page.click("#page-devices [data-cmd='pair.start']");
+      await page.waitForSelector("#page-devices .tc-steps, #page-devices .tc-hint--err", { timeout: 30000 });
+    }],
+  ];
+
+  for (const { url, viewport: [width, height], tag } of RUNS) {
+    // Measure a settled page: reduced motion disables the transitions and
+    // animations the stylesheet already gates behind that preference, so a
+    // background poll cannot repaint a row mid-measurement and leave
+    // half-updated geometry behind.
+    const ctx = await browser.newContext({
+      viewport: { width, height },
+      deviceScaleFactor: 2,
+      reducedMotion: "reduce",
+    });
+    const page = await ctx.newPage();
+    // Embedded, the console is in a frame, as in T3 Code's dialog: a host page
+    // on its own origin holds it, and the states below drive the frame (keys
+    // still go through the page, to whichever frame has focus).
+    const target = tag ? await framed(page, url) : page;
+    if (!tag) await page.goto(url, { waitUntil: "domcontentloaded" });
+    await target.fill("input[type=password]", KEY);
+    await target.click("button[type=submit]");
+    await target.waitForSelector("#page-overview .tc-check, #page-overview .tc-ready-line", { timeout: 60000 });
+
+    const label = `${width}x${height}${tag}`;
+    let found = 0;
+    // Make sure the frame really is the embedded console, not the plain page.
+    if (tag && !(await target.evaluate(() => document.documentElement.getAttribute("data-embed") === "t3"
+      && [...document.querySelectorAll('[data-cmd="embed.close"]')].some((b) => b.getClientRects().length)))) {
+      console.log(`  ${label.padEnd(19)} the console in the frame is not embedded, or has no visible close button`);
+      found += 1;
+    }
+    for (const [state, reach] of STATES) {
+      await reach(target);
+      await settle(target);
+      const findings = await target.evaluate(audit);
+      if (!findings.length) continue;
+      found += findings.length;
+      console.log(`  ${label.padEnd(19)} ${state}: ${findings.length} finding(s)`);
       for (const f of findings) {
         console.log(`      ${f.kind}: ${f.detail}`);
         if (f.where) console.log(`        at ${f.where}`);
       }
-      total += findings.length;
     }
+    if (!found) console.log(`  ${label.padEnd(19)} clean (${STATES.length} states)`);
+    total += found;
+    // The link this made is not for anyone; leave no unused link behind.
+    await target.evaluate(async () => {
+      const button = document.querySelector("#page-devices .tc-card-foot [data-cmd='link.revoke']");
+      if (!button) return;
+      await fetch((window.__T3_SETUP_BASE__ || "") + "/revoke", {
+        method: "POST", headers: { "content-type": "application/json" },
+        body: JSON.stringify({ kind: "pairing", id: button.dataset.id }),
+      });
+    });
     await ctx.close();
   }
 

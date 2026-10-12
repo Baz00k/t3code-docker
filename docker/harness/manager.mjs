@@ -1,0 +1,1436 @@
+// The persistent harness manager.
+//
+// One module owns the five supported harnesses (and, the same way, the
+// toolchains and source control CLIs): their exact-version install,
+// the global mise selection, the concrete executable path, and the facts
+// (configured, installed, runnable, authenticated, failed) the
+// setup console and T3 integration read. Status and resolve are strictly
+// read-only. Install/Update/Uninstall run one at a time under a lock and record
+// the exact version they resolved.
+import os from "node:os";
+import path from "node:path";
+
+import {
+  CATALOGUE, SOURCE_CONTROL, TOOLCHAINS, getHarness, getManagedTool, getSourceControl, normalizeArch, releaseSpec,
+  supportsArch,
+} from "./catalogue.mjs";
+import { createFs, createRunner, isExecutable, processAlive, processStartTime } from "./io.mjs";
+import * as lock from "./lock.mjs";
+import * as mise from "./mise.mjs";
+import {
+  canonicalTool, displayName, indexRegistry, isReservedTool, isVersionSpec, managedElsewhere,
+  parseDuration, parseRegistry, parseReleases, parseToolInfo, parseToolSpec,
+} from "./packages.mjs";
+import { credentialSurface, detectAuth, probeVersion } from "./probe.mjs";
+import {
+  DEFAULT_HOSTS, NO_PROMPT, credentialFiles, detectSourceControlAuth, deviceSignIn, failureLine, missingExtensions,
+  parseDevicePrompt, parseHost, parseToken, signOutArgs, teaLoginFor, tokenSignIn,
+} from "./source-control.mjs";
+import * as state from "./state.mjs";
+import { compareVersions, meetsMinimum } from "./version.mjs";
+
+// An exact release: digits, a dot, then version characters. Floating selectors
+// mise would also accept (`lts`, `2`, `latest`) are refused rather than
+// recorded, because the record has to say which release actually ran.
+// `latest` itself is accepted at the API and resolved before it gets here.
+const VERSION_SYNTAX = /^\d+\.[0-9A-Za-z._+-]{1,62}$/;
+
+// Steps report through this when nobody is listening and nothing can cancel.
+const NO_OP = Object.freeze({ signal: null, phase() {}, report() {} });
+
+// What an operation's work returns to have its record dropped rather than
+// updated: an uninstalled package leaves nothing behind to list.
+const REMOVE_RECORD = Symbol("remove-record");
+
+const DEFAULT_TIMEOUTS = Object.freeze({
+  mise: 120_000,
+  latest: 45_000,
+  install: 15 * 60 * 1000,
+  probe: 20_000,
+});
+
+/**
+ * Build a manager. Every dependency is injectable so the unit tests can drive
+ * exact-version selection, lock contention, and failure recovery without mise,
+ * a container, or the host filesystem.
+ */
+export function createHarnessManager(options = {}) {
+  const env = options.env ?? process.env;
+  const home = options.home ?? env.HOME ?? os.homedir();
+  const ctx = {
+    env,
+    home,
+    fs: options.fs ?? createFs(),
+    run: options.run ?? createRunner(),
+    now: options.now ?? Date.now,
+    pid: options.pid ?? process.pid,
+    isAlive: options.isAlive ?? processAlive,
+    startTimeOf: options.startTimeOf ?? processStartTime,
+    arch: normalizeArch(options.arch ?? process.arch),
+    miseBin: options.miseBin ?? env.T3_MISE_BIN ?? "mise",
+    configDir: options.configDir ?? env.MISE_CONFIG_DIR ?? path.join(home, ".config", "mise"),
+    dataDir: options.dataDir ?? env.MISE_DATA_DIR ?? path.join(home, ".local", "share", "mise"),
+    stateDir: options.stateDir ?? env.MISE_STATE_DIR ?? path.join(home, ".local", "state", "mise"),
+    cacheDir: options.cacheDir ?? env.MISE_CACHE_DIR ?? path.join(home, ".cache", "mise"),
+    // Links for harnesses that get no mise shim (Cursor), on the t3 user's
+    // PATH through docker/user-env.sh.
+    linkDir: options.linkDir ?? env.T3_HARNESS_BIN_DIR ?? path.join(home, ".local", "share", "t3-harness", "bin"),
+    // Only a backstop for a holder that is alive but hung: a dead or replaced
+    // holder is detected from its pid and start time straight away.
+    lockStaleMs: options.lockStaleMs ?? 60 * 60 * 1000,
+    authCacheTtlMs: options.authCacheTtlMs ?? 10_000,
+    // A source control CLI's check asks its server, and the setup page polls
+    // it every 15 seconds. Signing in or out here, or anywhere that writes the
+    // CLI's credential files, is seen at once (the files are part of the
+    // key); only a token revoked on the server waits this long to show.
+    scmAuthCacheTtlMs: options.scmAuthCacheTtlMs ?? 5 * 60 * 1000,
+    timeouts: { ...DEFAULT_TIMEOUTS, ...(options.timeouts ?? {}) },
+  };
+  ctx.lockPath = lock.lockPath(ctx.stateDir);
+  ctx.statePath = state.statePath(ctx.stateDir);
+
+  const authCache = new Map();
+
+  /** Read the shared snapshot once: mise, our state, and any live lock. */
+  async function snapshot() {
+    const listing = await mise.listTools(ctx);
+    let live = await lock.liveHolder(ctx);
+    let saved = await state.readState(ctx);
+    // An operation records "in-progress" just after taking the lock and "ok"
+    // just before releasing it, so reads that straddle either edge can pair a
+    // stale lock with a fresh state. Read both again before calling anything
+    // interrupted; a real interruption still reads the same way twice.
+    const running = (section) => Object.values(saved[section]).some((record) => record.operation?.state === "in-progress");
+    if (!live && (running("harnesses") || running("toolchains") || running("packages"))) {
+      live = await lock.liveHolder(ctx);
+      saved = await state.readState(ctx);
+    }
+    const degraded = listing.error ? [{ what: "mise", error: listing.error }] : [];
+    return { tools: listing.tools ?? {}, saved, live, degraded };
+  }
+
+  /** The version the user's global mise config selects for a tool, or null. */
+  async function globalVersion(tool) {
+    const listing = await mise.listTools(ctx);
+    if (listing.error) throw operationError("version-check-failed", `could not check the selected version of ${tool}: ${listing.error}`);
+    const global = (listing.tools?.[tool] ?? [])
+      .filter((candidate) => String(candidate.source?.path ?? "").startsWith(ctx.configDir));
+    return (global.find((candidate) => candidate.active) ?? global[0])?.version ?? null;
+  }
+
+  /**
+   * `mise use` and then prove the result runs. mise has moved the global
+   * selection by the time a probe can fail, so a release that installed but
+   * does not run is rolled back to whatever was selected before - otherwise
+   * the next sync would hand T3 an executable the manager just rejected.
+   */
+  async function useVerified(entry, target, verify, op = NO_OP, previous = {}) {
+    const before = await globalVersion(entry.miseTool);
+    op.phase("installing");
+    try {
+      await mise.use(ctx, entry.miseTool, target, entry.miseOptions ?? null, { signal: op.signal });
+    } catch (error) {
+      // Cancelled part way through a download or an unpack: mise may have
+      // left a partial install of a release nobody asked to keep. Remove it,
+      // unless it is one this manager installed before.
+      if (error?.code === "cancelled" && before !== target && !(previous.managedVersions ?? []).includes(target)) {
+        try { await mise.uninstall(ctx, entry.miseTool, target); } catch { /* best effort */ }
+      }
+      throw error;
+    }
+    // Past the point of no return: mise has moved the selection, so finish
+    // (verify, record) rather than stop half way.
+    op.report("verifying");
+    try {
+      return await verify();
+    } catch (error) {
+      if (before !== target) {
+        try {
+          if (before) await mise.use(ctx, entry.miseTool, before, entry.miseOptions ?? null);
+          else await mise.unuse(ctx, entry.miseTool);
+          await mise.uninstall(ctx, entry.miseTool, target);
+        } catch { /* the failure being reported is the one that matters */ }
+      }
+      throw error;
+    }
+  }
+
+  async function factsFor(entry, snap, { authenticate = true } = {}) {
+    const entries = snap.tools[entry.miseTool] ?? [];
+    const sourceEntry = entries.find((candidate) => candidate.source) ?? null;
+    const selected = entries.find((candidate) => candidate.active) ?? sourceEntry ?? entries[entries.length - 1] ?? null;
+    const configured = Boolean(sourceEntry);
+    const installed = configured && selected?.installed === true;
+    const installPath = installed ? selected.install_path ?? null : null;
+    const executable = installPath ? path.join(installPath, entry.executable) : null;
+    const executableExists = executable ? await isExecutable(ctx.fs, executable) : false;
+
+    const record = snap.saved.harnesses[entry.id] ?? {};
+    const recordedVersion = record.version ?? null;
+    const operation = record.operation ?? null;
+    const liveForThis = Boolean(snap.live && snap.live.id === entry.id);
+    const interrupted = operation?.state === "in-progress" && !liveForThis;
+
+    const installedVersion = installed
+      ? record.version === selected.version && record.executable === executable
+        ? record.verifiedVersion ?? selected.version ?? null
+        : selected.version ?? null
+      : null;
+    const belowMinimum = installed && meetsMinimum(installedVersion, entry.minimumVersion) === false;
+    // `failure` reports how the last operation ended. It does not decide
+    // whether the harness runs: an update that failed on a network blip
+    // leaves the previous release installed and selected, and taking that
+    // away would turn a failed update into an uninstall.
+    let failure = null;
+    if (interrupted) failure = "a previous operation was interrupted before it finished";
+    else if (operation?.state === "failed") failure = operation.error ?? "the last operation failed";
+    else if (belowMinimum) failure = `${installedVersion} is below the required ${entry.minimumVersion}`;
+    const failed = Boolean(failure);
+
+    const authExecutable = executableExists ? executable : null;
+    const authenticated =
+      authenticate && authExecutable
+        ? await authFor(entry, authExecutable, installedVersion ?? recordedVersion,
+          () => detectAuth(ctx, entry, { executable: authExecutable, runnable: true }))
+        : null;
+
+    return {
+      id: entry.id,
+      name: entry.name,
+      miseTool: entry.miseTool,
+      supported: supportsArch(entry, ctx.arch),
+      architecture: ctx.arch,
+      minimumVersion: entry.minimumVersion,
+      configured,
+      configuredVersion: sourceEntry?.requested_version ?? null,
+      installed,
+      installedVersion,
+      recordedVersion,
+      recordedExecutable: record.executable ?? null,
+      verifiedVersion: record.verifiedVersion ?? null,
+      executable: executableExists ? executable : null,
+      runnable: installed && executableExists && !belowMinimum && !liveForThis,
+      authenticated,
+      failed,
+      failure,
+      minimumSatisfied: installed ? !belowMinimum : null,
+      operation: operation?.kind ?? null,
+      operationState: operation?.state ?? null,
+      inProgress: Boolean(snap.live && snap.live.id === entry.id),
+      managedVersions: record.managedVersions ?? [],
+      credentials: await credentialSurface(ctx, entry),
+    };
+  }
+
+  /**
+   * A sign-in verdict, cached per id for `ttl` while the executable, its
+   * version and `stamp` (whatever else should invalidate it) stay the same.
+   */
+  async function authFor(entry, executable, version, detect, { ttl = ctx.authCacheTtlMs, stamp = "" } = {}) {
+    const key = `${executable}:${version ?? ""}:${stamp}`;
+    const cached = authCache.get(entry.id);
+    if (cached && cached.key === key && ctx.now() - cached.at < ttl) return cached.value;
+    const value = await detect();
+    authCache.set(entry.id, { at: ctx.now(), key, value });
+    return value;
+  }
+
+  /** Exact-version selection from mise's install: the concrete executable. */
+  async function resolveExecutable(entry, version) {
+    const resolved = await mise.which(ctx, entry.miseTool);
+    if (resolved) return resolved;
+    return path.join(mise.installDir(ctx, entry.miseTool, version), entry.executable);
+  }
+
+  function assertVersion(version) {
+    if (!VERSION_SYNTAX.test(String(version ?? ""))) {
+      const error = new Error(`invalid version: ${version}`);
+      error.code = "invalid-version";
+      throw error;
+    }
+  }
+
+  /**
+   * Run one lifecycle operation under the global lock, recording how it went
+   * in `section` of the state file. `onStarted` fires once the lock is held,
+   * which is how the setup server answers a POST as soon as the work has
+   * really begun instead of holding the request for the length of a download.
+   */
+  async function runLocked({ section, id, kind, entry, work, onStarted, onProgress, signal, after }) {
+    const held = await lock.acquireLock(ctx, { id, operation: kind });
+    if (!held.acquired) {
+      const detail = held.error
+        ? held.error
+        : `another operation is in progress (${held.holder?.operation ?? "unknown"}` +
+          `${held.holder?.id ? ` ${held.holder.id}` : ""})`;
+      return { ok: false, code: held.error ? "lock-error" : "busy", error: detail, ...(await after()) };
+    }
+
+    // What an operation's steps report through: the phase it has reached, and
+    // whether someone has cancelled it (checked between steps; a running
+    // mise is stopped by the same signal).
+    const op = {
+      signal: signal ?? null,
+      result: null,
+      unchanged(message) {
+        if (signal?.aborted) throw mise.cancelledError();
+        op.result = { code: "up-to-date", changed: false, message };
+      },
+      phase(name) {
+        if (signal?.aborted) throw mise.cancelledError();
+        op.report(name);
+      },
+      report(name) {
+        try { onProgress?.({ phase: name }); } catch { /* a listener cannot fail the operation */ }
+      },
+    };
+    let outcome;
+    try {
+      try { onStarted?.(); } catch { /* a listener cannot fail the operation */ }
+      const before = await state.readState(ctx);
+      const previous = before[section][id] ?? {};
+      await state.updateEntry(ctx, section, id, {
+        operation: { kind, state: "in-progress", startedAt: ctx.now(), finishedAt: null, error: null },
+      });
+      const patch = await work(entry, previous, op) ?? {};
+      if (patch === REMOVE_RECORD) {
+        await state.removeEntry(ctx, section, id);
+      } else {
+        await state.updateEntry(ctx, section, id, {
+          ...patch,
+          operation: { kind, state: "ok", startedAt: null, finishedAt: ctx.now(), error: null, ...(op.result ?? {}) },
+        });
+      }
+      outcome = { ok: true, code: "ok", changed: true, ...(op.result ?? {}) };
+    } catch (error) {
+      // A cancelled operation is not a failed one: the row goes back to how
+      // it was, without an error to explain.
+      const cancelled = error?.code === "cancelled" || Boolean(signal?.aborted);
+      const message = cancelled ? "cancelled" : String(error?.message ?? error);
+      await state.updateEntry(ctx, section, id, {
+        operation: { kind, state: cancelled ? "cancelled" : "failed", startedAt: null, finishedAt: ctx.now(), error: cancelled ? null : message },
+      });
+      outcome = { ok: false, code: cancelled ? "cancelled" : error?.code ?? "failed", error: message };
+    } finally {
+      await held.release();
+    }
+    // Resolve after releasing the lock: the operation has finished, so the
+    // returned facts must not read as "still in progress".
+    return { ...outcome, ...(await after()) };
+  }
+
+  async function runOperation(id, kind, work, { onStarted, onProgress, signal } = {}) {
+    const entry = getHarness(id);
+    if (!entry) return { ok: false, code: "unknown-harness", error: `unknown harness: ${id}` };
+    if (!supportsArch(entry, ctx.arch)) {
+      return { ok: false, code: "unsupported-arch", error: `${entry.name} has no ${ctx.arch} build` };
+    }
+    return runLocked({
+      section: "harnesses",
+      id,
+      kind,
+      entry,
+      work,
+      onStarted,
+      onProgress,
+      signal,
+      after: async () => {
+        authCache.delete(id);
+        await refreshLinks();
+        return { harness: await resolve(id) };
+      },
+    });
+  }
+
+  /**
+   * A typed version that can never be exact is refused before the lock, so a
+   * typo answers at once and is not recorded as a failed operation.
+   */
+  function refuseMalformed(version) {
+    const requested = version ? String(version).trim() : "";
+    if (!requested || requested === "latest" || VERSION_SYNTAX.test(requested)) return null;
+    return { ok: false, code: "invalid-version", error: `invalid version: ${requested}` };
+  }
+
+  /** `latest` (or nothing) resolves to mise's newest release, recorded exact. */
+  async function targetVersion(entry, version, op = NO_OP, { anyAge = false, fresh = false } = {}) {
+    const requested = version ? String(version).trim() : "";
+    if (!requested || requested === "latest") op.phase("resolving");
+    const target = requested && requested !== "latest"
+      ? requested
+      : await mise.latest(ctx, entry.miseTool, { signal: op.signal, anyAge, fresh });
+    assertVersion(target);
+    if (meetsMinimum(target, entry.minimumVersion) === false) {
+      throw operationError("version-below-minimum", `${entry.name} ${target} is below the required ${entry.minimumVersion}`);
+    }
+    return target;
+  }
+
+  /** An ordinary update keeps a newer selection, even when a registry is stale. */
+  function keepNewer(entry, current, target, op) {
+    if (!current || compareVersions(current, target) <= 0) return false;
+    op.unchanged(`${entry.name} ${current} is newer than the available ${target}; keeping ${current}.`);
+    return true;
+  }
+
+  /** Install and select one exact release, and prove it runs before recording it. */
+  async function select(entry, previous, target, op = NO_OP) {
+    const { executable, probe } = await useVerified(entry, target, async () => {
+      const resolved = await resolveExecutable(entry, target);
+      const result = await probeVersion(ctx, entry, resolved);
+      if (!result.ok) throw operationError("not-runnable", result.error ?? "the installed executable did not run");
+      if (compareVersions(result.version, target) !== 0) {
+        throw operationError("version-mismatch", `${entry.name} reported ${result.version} after installing ${target}`);
+      }
+      return { executable: resolved, probe: result };
+    }, op, previous);
+    return {
+      version: target,
+      executable,
+      verifiedVersion: probe.version,
+      installedAt: previous.installedAt ?? ctx.now(),
+      updatedAt: ctx.now(),
+      managedVersions: union(previous.managedVersions, [target]),
+    };
+  }
+
+  /**
+   * Install a harness. Without an explicit version it resolves mise's latest
+   * and records that exact value. Already-installed versions are re-verified.
+   */
+  async function install(id, options = {}) {
+    const refused = refuseMalformed(options.version);
+    if (refused) return refused;
+    return runOperation(id, "install", async (entry, previous, op) =>
+      select(entry, previous, await targetVersion(entry, options.version, op), op), options);
+  }
+
+  /** Update to the newest stable immediately, keeping newer installed versions. */
+  async function update(id, options = {}) {
+    const refused = refuseMalformed(options.version);
+    if (refused) return refused;
+    // Nothing to update is an answer, not a failed operation to record.
+    const current = getHarness(id) ? await resolve(id, { authenticate: false }) : null;
+    if (current && !current.installed && !current.recordedVersion) {
+      return { ok: false, code: "not-installed", error: `${current.name} is not installed`, harness: current };
+    }
+    return runOperation(id, "update", async (entry, previous, op) => {
+      if (!previous.version) {
+        const current = await resolve(id, { authenticate: false });
+        if (!current.installed) throw operationError("not-installed", `${entry.name} is not installed`);
+      }
+      const target = await targetVersion(entry, options.version, op, { anyAge: true, fresh: true });
+      // Read after taking the lock: the selection may have moved since the
+      // button was drawn, or since the pre-check above. An exact version is a
+      // deliberate switch (including a downgrade); a floating update is not.
+      if (!cleanVersion(options.version)) {
+        const selected = await globalVersion(entry.miseTool);
+        if (keepNewer(entry, selected, target, op)) return {};
+        const current = await resolve(id, { authenticate: false });
+        op.phase("verifying");
+        const probe = current.executable ? await probeVersion(ctx, entry, current.executable) : null;
+        // An agent's own updater can have changed a binary inside mise's
+        // older install directory. Protect the version that actually runs too.
+        if (probe?.ok && keepNewer(entry, probe.version, target, op)) {
+          return { version: selected, executable: current.executable, verifiedVersion: probe.version };
+        }
+        if (selected && compareVersions(selected, target) === 0 && probe?.ok && compareVersions(probe.version, target) === 0) {
+          op.unchanged(`${entry.name} ${probe.version} is already up to date.`);
+          return {};
+        }
+      }
+      return select(entry, previous, target, op);
+    }, options);
+  }
+
+  /**
+   * Remove the managed selection and every version the manager installed while
+   * preserving credentials.
+   */
+  async function uninstall(id, options = {}) {
+    return runOperation(id, "uninstall", async (entry, previous, op) => {
+      op.phase("removing");
+      // Remove what this manager installed, plus any version the global
+      // selection currently points at, so a harness installed before the
+      // manager kept state still uninstalls cleanly.
+      const before = await mise.listTools(ctx);
+      const configured = (before.tools?.[entry.miseTool] ?? [])
+        .filter((candidate) => candidate.source && candidate.installed)
+        .map((candidate) => candidate.version);
+      const versions = union(
+        previous.managedVersions,
+        previous.version ? [previous.version] : [],
+        configured,
+      );
+      try {
+        await mise.unuse(ctx, entry.miseTool);
+      } catch (error) {
+        // A tool that is not configured is already unselected.
+        if (!/not (found|present|installed)/i.test(String(error?.message ?? ""))) throw error;
+      }
+      for (const version of versions) {
+        await mise.uninstall(ctx, entry.miseTool, version);
+      }
+      return {
+        version: undefined,
+        executable: undefined,
+        verifiedVersion: undefined,
+        managedVersions: [],
+      };
+    }, options);
+  }
+
+  // --- toolchains -----------------------------------------------------------
+  //
+  // Go, Rust, Bun, Deno and uv, selected in the user's global mise config so
+  // they work in every directory. Simpler than a harness: no sign-in, and the
+  // shim on PATH is the whole interface, so the facts are what mise reports.
+
+  function toolchainFacts(entry, snap) {
+    const entries = snap.tools[entry.miseTool] ?? [];
+    const configured = entries.filter((candidate) =>
+      candidate.source && String(candidate.source.path ?? "").startsWith(ctx.configDir));
+    const global = configured.find((candidate) => candidate.active) ?? configured[0] ?? null;
+    const record = snap.saved.toolchains[entry.id] ?? {};
+    const operation = record.operation ?? null;
+    const liveForThis = Boolean(snap.live && snap.live.id === entry.id);
+    const interrupted = operation?.state === "in-progress" && !liveForThis;
+    let failure = null;
+    if (interrupted) failure = "a previous operation was interrupted before it finished";
+    else if (operation?.state === "failed") failure = operation.error ?? "the last operation failed";
+    return {
+      id: entry.id,
+      name: entry.name,
+      miseTool: entry.miseTool,
+      installed: Boolean(global?.installed),
+      version: global?.installed ? global.version ?? null : null,
+      inProgress: liveForThis,
+      operation: operation?.kind ?? null,
+      operationState: operation?.state ?? null,
+      managedVersions: record.managedVersions ?? [],
+      failed: Boolean(failure),
+      failure,
+    };
+  }
+
+  /**
+   * The five toolchains, every other tool in the global config (see packages
+   * below) and the source control CLIs without their sign-ins, from one
+   * `mise ls`: the console reads this on every poll.
+   */
+  async function toolchainStatus() {
+    const snap = await snapshot();
+    return {
+      toolchains: TOOLCHAINS.map((entry) => toolchainFacts(entry, snap)),
+      packages: packageIds(snap).map((id) => packageFacts(id, snap)),
+      sourceControl: await Promise.all(SOURCE_CONTROL.map((entry) => sourceControlFacts(entry, snap))),
+      degraded: snap.degraded,
+    };
+  }
+
+  async function resolveToolchain(id) {
+    const entry = getManagedTool(id);
+    if (!entry) throw new Error(`unknown toolchain: ${id}`);
+    return toolchainFacts(entry, await snapshot());
+  }
+
+  function runToolchain(id, kind, work, { onStarted, onProgress, signal } = {}) {
+    const entry = getManagedTool(id);
+    if (!entry) return Promise.resolve({ ok: false, code: "unknown-toolchain", error: `unknown toolchain: ${id}` });
+    return runLocked({
+      section: "toolchains",
+      id,
+      kind,
+      entry,
+      work,
+      onStarted,
+      onProgress,
+      signal,
+      after: async () => ({ toolchain: await resolveToolchain(id) }),
+    });
+  }
+
+  /**
+   * Install, or move to, mise's latest release, then prove the shim runs. A
+   * CLI that needs extensions (az) gets the missing ones as part of the proof:
+   * without them T3 cannot use it, so a release that cannot add them is
+   * rolled back like one that does not run.
+   */
+  async function selectToolchain(entry, previous, op = NO_OP, resolvedTarget = null) {
+    op.phase("resolving");
+    const target = resolvedTarget ?? await mise.latest(ctx, releaseSpec(entry), { signal: op.signal });
+    assertVersion(target);
+    await useVerified(entry, target, async () => {
+      const [bin, ...args] = entry.probe;
+      const executable = await mise.which(ctx, bin);
+      if (!executable) throw operationError("not-runnable", `mise installed ${entry.name} ${target} but has no ${bin}`);
+      const result = await ctx.run([executable, ...args], {
+        env: ctx.env,
+        cwd: ctx.home,
+        timeoutMs: ctx.timeouts.probe,
+      });
+      if (result.error || result.code !== 0) {
+        throw operationError("not-runnable", result.error || `${bin} exited with code ${result.code}`);
+      }
+      for (const name of await missingExtensions(ctx, entry)) {
+        const added = await ctx.run([executable, "extension", "add", "--name", name, "--yes"], {
+          env: ctx.env,
+          cwd: ctx.home,
+          timeoutMs: ctx.timeouts.install,
+          ...(op.signal ? { signal: op.signal } : {}),
+        });
+        if (added.cancelled) throw mise.cancelledError();
+        if (added.error || added.code !== 0) {
+          throw operationError("extension-failed", `could not add the ${name} extension: ${mise.firstError(added) || `exited with code ${added.code}`}`);
+        }
+      }
+    }, op, previous);
+    return { version: target, updatedAt: ctx.now(), managedVersions: union(previous.managedVersions, [target]) };
+  }
+
+  async function installToolchain(id, options = {}) {
+    // A source control CLI someone already added as a tool of their own
+    // (azure-cli, gitlab:gitlab-org/cli) is not installed a second time: two
+    // shims for one command, and only one of them wins on PATH.
+    const scm = getSourceControl(id);
+    const owner = scm && !scm.inImage ? await providerOf(scm, await snapshot()) : null;
+    if (owner) {
+      return { ok: false, code: "provided-elsewhere",
+        error: `${scm.bin} already comes from the added tool ${owner.tool}; remove it there first to install ${scm.name} here` };
+    }
+    return runToolchain(id, "install", selectToolchain, options);
+  }
+
+  function updateToolchain(id, options = {}) {
+    return runToolchain(id, "update", async (entry, previous, op) => {
+      op.phase("resolving");
+      const target = await mise.latest(ctx, releaseSpec(entry), { signal: op.signal });
+      assertVersion(target);
+      const selected = await globalVersion(entry.miseTool);
+      if (keepNewer(entry, selected, target, op)) return {};
+      if (selected && compareVersions(selected, target) === 0) {
+        op.phase("verifying");
+        const [bin, ...args] = entry.probe;
+        const executable = await mise.which(ctx, bin);
+        const probe = executable ? await ctx.run([executable, ...args], {
+          env: ctx.env, cwd: ctx.home, timeoutMs: ctx.timeouts.probe,
+        }) : null;
+        if (probe && !probe.error && probe.code === 0 && !(await missingExtensions(ctx, entry)).length) {
+          op.unchanged(`${entry.name} ${selected} is already up to date.`);
+          return {};
+        }
+      }
+      return selectToolchain(entry, previous, op, target);
+    }, options);
+  }
+
+  /**
+   * Drop the global selection and every release this manager installed (an
+   * update leaves the previous one behind), plus whatever the global config
+   * selected. A version only a project asked for is that project's to keep.
+   */
+  function uninstallToolchain(id, options = {}) {
+    return runToolchain(id, "uninstall", async (entry, previous, op) => {
+      op.phase("removing");
+      const listing = await mise.listTools(ctx);
+      const selected = (listing.tools?.[entry.miseTool] ?? [])
+        .filter((candidate) => candidate.installed && String(candidate.source?.path ?? "").startsWith(ctx.configDir))
+        .map((candidate) => candidate.version);
+      await mise.unuse(ctx, entry.miseTool);
+      for (const version of union(previous.managedVersions, selected)) {
+        await mise.uninstall(ctx, entry.miseTool, version);
+      }
+      return { version: undefined, managedVersions: [] };
+    }, options);
+  }
+
+  // --- packages -------------------------------------------------------------
+  //
+  // Any other tool in the user's global mise config: ripgrep, kubectl, python,
+  // `npm:prettier`. Managed like a toolchain - one at a time under the lock,
+  // installed at an exact version and proven installed before it is recorded -
+  // except that nothing is known about it in advance: its name comes from the
+  // person adding it (validated in packages.mjs), and "it works" means mise
+  // reports that exact version installed. Tools someone added with
+  // `mise use -g` are listed and managed too; they simply have no record yet.
+
+  let registryLoad = null;
+  /** mise's built-in registry, parsed once per process: it ships in the binary. */
+  function packageRegistry() {
+    registryLoad ??= mise.registry(ctx).then(parseRegistry, (error) => {
+      registryLoad = null;
+      throw error;
+    });
+    return registryLoad;
+  }
+  let registryIndexLoad = null;
+  function registryIndex() {
+    registryIndexLoad ??= packageRegistry().then(indexRegistry, (error) => {
+      registryIndexLoad = null;
+      throw error;
+    });
+    return registryIndexLoad;
+  }
+
+  /**
+   * A tool name as it should be configured, or the reason it cannot be: not a
+   * valid name, or one an agent or toolchain is managed under (in any spelling:
+   * claude-code, core:go). Aliases become their registry name (rg -> ripgrep),
+   * so a tool is never configured twice under two names.
+   */
+  async function normalizePackage(raw) {
+    const parsed = parseToolSpec(raw);
+    if (!parsed.ok) return { ok: false, code: "invalid-tool", error: parsed.error };
+    const index = await registryIndex().catch(() => null);
+    const owner = managedElsewhere(parsed.id, index);
+    if (owner) {
+      return {
+        ok: false,
+        code: "managed-elsewhere",
+        error: `${owner.name} is managed on the ${{ agent: "Agents", "source-control": "Source control" }[owner.kind] ?? "Toolchains"} page, not as an added tool.`,
+      };
+    }
+    return { ok: true, id: canonicalTool(parsed.id, index) };
+  }
+
+  function isGlobal(candidate) {
+    return Boolean(candidate.source) && String(candidate.source.path ?? "").startsWith(ctx.configDir);
+  }
+
+  function packageIds(snap) {
+    const ids = new Set();
+    for (const [tool, entries] of Object.entries(snap.tools)) {
+      if (isReservedTool(tool) || (tool.startsWith("core:") && isReservedTool(tool.slice(5)))) continue;
+      if (entries.some(isGlobal)) ids.add(tool);
+    }
+    // A record without a config entry is a first install that failed (shown so
+    // it can be retried or dismissed) or one under way. One that finished with
+    // the tool gone was removed outside the console, and is not shown.
+    for (const [id, record] of Object.entries(snap.saved.packages)) {
+      const stateNow = record.operation?.state;
+      if (stateNow === "failed" || stateNow === "in-progress" || snap.live?.id === id) ids.add(id);
+    }
+    return [...ids].sort((a, b) => displayName(a).localeCompare(displayName(b)) || a.localeCompare(b));
+  }
+
+  function packageFacts(id, snap) {
+    const configured = (snap.tools[id] ?? []).filter(isGlobal);
+    const global = configured.find((candidate) => candidate.active) ?? configured[0] ?? null;
+    const record = snap.saved.packages[id] ?? {};
+    const operation = record.operation ?? null;
+    const liveForThis = Boolean(snap.live && snap.live.id === id);
+    const interrupted = operation?.state === "in-progress" && !liveForThis;
+    let failure = null;
+    if (interrupted) failure = "a previous operation was interrupted before it finished";
+    else if (operation?.state === "failed") failure = operation.error ?? "the last operation failed";
+    return {
+      id,
+      name: displayName(id),
+      configured: Boolean(global),
+      installed: Boolean(global?.installed),
+      version: global?.installed ? global.version ?? null : null,
+      // What the config asks for, when that is not an exact version: `latest`,
+      // `3`, `lts`. The console says so rather than implying a pin.
+      requestedVersion: global?.requested_version ?? null,
+      inProgress: liveForThis,
+      operation: operation?.kind ?? null,
+      operationState: operation?.state ?? null,
+      managedVersions: record.managedVersions ?? [],
+      // Added with `mise use -g` rather than through the manager.
+      adopted: Boolean(global) && !record.version,
+      failed: Boolean(failure),
+      failure,
+    };
+  }
+
+  async function resolvePackage(id) {
+    return packageFacts(id, await snapshot());
+  }
+
+  function runPackage(id, kind, work, { onStarted, onProgress, signal } = {}) {
+    return runLocked({
+      section: "packages",
+      id,
+      kind,
+      entry: { id, miseTool: id, name: displayName(id) },
+      work,
+      onStarted,
+      onProgress,
+      signal,
+      after: async () => ({ package: await resolvePackage(id) }),
+    });
+  }
+
+  /**
+   * The exact release to install: mise's newest, or the newest matching a
+   * prefix (3.12 -> 3.12.7), or the exact version asked for. A release named in
+   * full installs even while mise is still holding it back for its minimum
+   * release age, as `mise use` itself allows; a prefix, or nothing, only ever
+   * takes a release that has waited it out.
+   */
+  async function packageTarget(id, version, op) {
+    op.phase("resolving");
+    const spec = version ? `${id}@${version}` : id;
+    let target;
+    try {
+      target = await mise.latest(ctx, spec, { signal: op.signal });
+    } catch (error) {
+      if (!version || error?.code === "cancelled") throw error;
+      const named = await mise.latest(ctx, spec, { signal: op.signal, anyAge: true }).catch((retry) => {
+        if (retry?.code === "cancelled") throw retry;
+        return null;
+      });
+      if (named !== version) {
+        throw operationError("invalid-version", named
+          ? `${displayName(id)} has no ${version} release mise offers yet. Name one in full, such as ${named}, to install it now.`
+          : `no release of ${displayName(id)} matches ${version}`);
+      }
+      target = named;
+    }
+    if (!isVersionSpec(target)) throw operationError("invalid-version", `mise resolved ${displayName(id)} to "${target}", which is not a version`);
+    return target;
+  }
+
+  /** `mise use` the release, then prove mise reports it installed before recording it. */
+  async function selectPackage(id, previous, target, op) {
+    const entry = { id, miseTool: id, name: displayName(id) };
+    const version = await useVerified(entry, target, async () => {
+      const listing = await mise.listTools(ctx);
+      const configured = (listing.tools?.[id] ?? []).filter(isGlobal);
+      const selected = configured.find((candidate) => candidate.version === target && candidate.installed)
+        ?? configured.find((candidate) => candidate.active && candidate.installed);
+      if (!selected) throw operationError("not-installed", `mise did not report ${displayName(id)} ${target} as installed`);
+      return selected.version;
+    }, op, previous);
+    return {
+      version,
+      installedAt: previous.installedAt ?? ctx.now(),
+      updatedAt: ctx.now(),
+      managedVersions: union(previous.managedVersions, [version]),
+    };
+  }
+
+  function cleanVersion(version) {
+    const value = version === undefined || version === null ? "" : String(version).trim();
+    return value === "latest" ? "" : value;
+  }
+
+  /**
+   * Add a tool, or switch an added one to another release. Without a version
+   * it resolves mise's newest; a prefix (3.12) resolves to the newest under it.
+   */
+  async function installPackage(raw, options = {}) {
+    const normalized = await normalizePackage(raw);
+    if (!normalized.ok) return normalized;
+    const version = cleanVersion(options.version);
+    if (version && !isVersionSpec(version)) return { ok: false, code: "invalid-version", error: `invalid version: ${version}` };
+    const { id } = normalized;
+    return runPackage(id, "install", async (entry, previous, op) =>
+      selectPackage(id, previous, await packageTarget(id, version, op), op), options);
+  }
+
+  /** Move an added tool to mise's newest release. */
+  async function updatePackage(raw, options = {}) {
+    const normalized = await normalizePackage(raw);
+    if (!normalized.ok) return normalized;
+    const { id } = normalized;
+    const current = await resolvePackage(id);
+    if (!current.configured) {
+      return { ok: false, code: "not-installed", error: `${displayName(id)} is not installed`, package: current };
+    }
+    return runPackage(id, "update", async (entry, previous, op) => {
+      const target = await packageTarget(id, "", op);
+      const selected = await globalVersion(id);
+      if (keepNewer(entry, selected, target, op)) return {};
+      const current = await resolvePackage(id);
+      if (selected && compareVersions(selected, target) === 0 && current.installed) {
+        op.unchanged(`${entry.name} ${selected} is already up to date.`);
+        return {};
+      }
+      return selectPackage(id, previous, target, op);
+    }, options);
+  }
+
+  /**
+   * Remove an added tool from the global config, with every release this
+   * manager installed and the one the config selected. A version only a
+   * project asks for is that project's to keep. A failed first install, which
+   * never reached the config, is simply dismissed.
+   */
+  async function uninstallPackage(raw, options = {}) {
+    const parsed = parseToolSpec(raw);
+    if (!parsed.ok) return { ok: false, code: "invalid-tool", error: parsed.error };
+    const index = await registryIndex().catch(() => null);
+    const id = canonicalTool(parsed.id, index);
+    if (managedElsewhere(id, index)) return normalizePackage(id);
+    return runPackage(id, "uninstall", async (entry, previous, op) => {
+      op.phase("removing");
+      const listing = await mise.listTools(ctx);
+      const selected = (listing.tools?.[id] ?? [])
+        .filter((candidate) => candidate.installed && isGlobal(candidate))
+        .map((candidate) => candidate.version);
+      const configured = (listing.tools?.[id] ?? []).some(isGlobal);
+      if (configured) {
+        try {
+          await mise.unuse(ctx, id);
+        } catch (error) {
+          if (!/not (found|present|installed)/i.test(String(error?.message ?? ""))) throw error;
+        }
+      }
+      for (const version of union(previous.managedVersions, selected)) {
+        await mise.uninstall(ctx, id, version);
+      }
+      return REMOVE_RECORD;
+    }, options);
+  }
+
+  async function latestPackage(raw) {
+    const parsed = parseToolSpec(raw);
+    if (!parsed.ok) throw new Error(parsed.error);
+    return mise.latest(ctx, parsed.id);
+  }
+
+  async function latestPackageRelease(raw) {
+    const parsed = parseToolSpec(raw);
+    if (!parsed.ok) throw new Error(parsed.error);
+    return releaseSummary(parsed.id);
+  }
+
+  /** Every release a tool's backend offers, newest first. Asks the network. */
+  async function packageVersions(raw) {
+    const parsed = parseToolSpec(raw);
+    if (!parsed.ok) throw new Error(parsed.error);
+    return releaseList(parsed.id);
+  }
+
+  /** Where a tool comes from and how its downloads are verified. */
+  async function packageInfo(raw) {
+    const parsed = parseToolSpec(raw);
+    if (!parsed.ok) throw new Error(parsed.error);
+    return parseToolInfo(await mise.toolInfo(ctx, parsed.id));
+  }
+
+  /**
+   * Point each linkOnPath harness's link at its runnable executable, or remove
+   * it. Runs after every operation and on every start (from preinstall), so
+   * the link can never outlive the install it names. Best effort: a link that
+   * cannot be written costs a shell lookup, nothing else.
+   */
+  async function refreshLinks() {
+    const linked = CATALOGUE.filter((entry) => entry.linkOnPath);
+    if (!linked.length) return;
+    let snap;
+    try {
+      snap = await snapshot();
+    } catch {
+      return;
+    }
+    if (snap.degraded.length) return; // mise could not answer; change nothing
+    for (const entry of linked) {
+      const facts = await factsFor(entry, snap, { authenticate: false });
+      const link = path.join(ctx.linkDir, entry.miseTool);
+      const target = facts.runnable && facts.executable ? facts.executable : null;
+      try {
+        const current = await ctx.fs.readlink(link).catch(() => null);
+        if (current === target) continue;
+        if (current !== null) await ctx.fs.unlink(link);
+        if (target) {
+          await ctx.fs.mkdir(ctx.linkDir, { recursive: true });
+          await ctx.fs.symlink(target, link);
+        }
+      } catch { /* best effort */ }
+    }
+  }
+
+  /** Read-only facts for every catalogue entry. */
+  async function status(options = {}) {
+    const snap = await snapshot();
+    const harnesses = await Promise.all(
+      CATALOGUE.map((entry) => factsFor(entry, snap, options)),
+    );
+    return { harnesses, degraded: snap.degraded };
+  }
+
+  /** Read-only facts for one harness. */
+  async function resolve(id, options = {}) {
+    const entry = getHarness(id);
+    if (!entry) throw new Error(`unknown harness: ${id}`);
+    const snap = await snapshot();
+    return factsFor(entry, snap, options);
+  }
+
+  /**
+   * The newest stable agent release, without the release-age wait or an install. Asks
+   * the registry, so it belongs in a background job, never on a status read.
+   */
+  async function latest(id) {
+    const entry = getHarness(id);
+    if (!entry) throw new Error(`unknown harness: ${id}`);
+    return mise.latest(ctx, entry.miseTool, { anyAge: true });
+  }
+
+  async function latestToolchain(id) {
+    const entry = getManagedTool(id);
+    if (!entry) throw new Error(`unknown toolchain: ${id}`);
+    return mise.latest(ctx, releaseSpec(entry));
+  }
+
+  // mise offers a release as the newest only once it has been out for its
+  // minimum release age (a day). These say what it offers now and what has
+  // been published past that, so a row can tell someone a release is out - and
+  // that naming it installs it now - a day before mise would pick it.
+
+  /**
+   * Every release of a mise tool, newest first: when each was published, and
+   * whether mise is still holding it back (`waiting`: newer than what `mise
+   * latest` offers). Asks the network, so never on a status read.
+   */
+  async function releaseList(tool, { minimumVersion = null } = {}) {
+    const [listing, offered] = await Promise.all([
+      mise.lsRemote(ctx, tool, { json: true, anyAge: true }),
+      mise.latest(ctx, tool).catch(() => null),
+    ]);
+    return {
+      latest: offered,
+      releases: parseReleases(listing).map((release) => ({
+        ...release,
+        waiting: Boolean(offered) && !release.prerelease && compareVersions(release.version, offered) > 0,
+        ...(minimumVersion ? { supported: meetsMinimum(release.version, minimumVersion) !== false } : {}),
+      })),
+    };
+  }
+
+  /** `{ version, newest, newestAt }`: what mise offers, and the newest release it is holding back. */
+  async function releaseSummary(tool) {
+    const version = await mise.latest(ctx, tool);
+    const releases = await mise.lsRemote(ctx, tool, { json: true, anyAge: true }).then(parseReleases, () => []);
+    const held = releases.find((release) => !release.prerelease && compareVersions(release.version, version) > 0) ?? null;
+    return { version, newest: held?.version ?? null, newestAt: held?.releasedAt ?? null };
+  }
+
+  /**
+   * How long mise holds a new release back (its `minimum_release_age`), in
+   * milliseconds; null when that cannot be said (unset, or a date). Local.
+   */
+  let releaseAgeRead = null;
+  function releaseAge() {
+    releaseAgeRead ??= mise.setting(ctx, "minimum_release_age").then(parseDuration, () => null);
+    return releaseAgeRead;
+  }
+
+  /** Every release of an agent, newest first, for picking one. */
+  async function versions(id) {
+    const entry = getHarness(id);
+    if (!entry) throw new Error(`unknown harness: ${id}`);
+    return releaseList(entry.miseTool, { minimumVersion: entry.minimumVersion });
+  }
+
+  async function latestRelease(id) {
+    return { version: await latest(id), newest: null, newestAt: null };
+  }
+
+  async function latestToolchainRelease(id) {
+    const entry = getManagedTool(id);
+    if (!entry) throw new Error(`unknown toolchain: ${id}`);
+    return releaseSummary(releaseSpec(entry));
+  }
+
+  // --- source control CLIs ------------------------------------------------
+  //
+  // The CLIs T3 Code drives for each source control host. The ones mise
+  // installs are run as toolchains (install, update and uninstall above, the
+  // same lock and record); this adds what a toolchain does not have: which
+  // host each is for, whether it is signed in, and the image's own gh.
+
+  /**
+   * The image's gh, read once: it only changes with the image. Run by its own
+   * path, so a newer gh someone added through mise is not taken for it.
+   */
+  let imageVersionRead = null;
+  function imageVersion(entry) {
+    imageVersionRead ??= (async () => {
+      const result = await ctx.run(entry.probe, { env: ctx.env, cwd: ctx.home, timeoutMs: ctx.timeouts.probe });
+      const version = result.code === 0 ? new RegExp(entry.versionPattern).exec(result.stdout)?.[1] ?? null : null;
+      if (!version) imageVersionRead = null;
+      return version;
+    })();
+    return imageVersionRead;
+  }
+
+  /** A command in a mise install: at its root, or in its bin directory (pipx, glab). */
+  async function binIn(installPath, bin) {
+    if (!installPath) return null;
+    for (const candidate of [path.join(installPath, "bin", bin), path.join(installPath, bin)]) {
+      if (await isExecutable(ctx.fs, candidate)) return candidate;
+    }
+    return null;
+  }
+
+  /**
+   * The added tool that already provides a source control CLI's command, when
+   * the CLI itself is not installed: `{ tool, version, executable }`, or null.
+   * Read from the snapshot's install paths; no process is started.
+   */
+  async function providerOf(entry, snap) {
+    for (const [tool, entries] of Object.entries(snap.tools)) {
+      if (tool === entry.miseTool || isReservedTool(tool)) continue;
+      const global = entries.filter((candidate) => isGlobal(candidate) && candidate.installed);
+      const selected = global.find((candidate) => candidate.active) ?? global[0];
+      const executable = await binIn(selected?.install_path, entry.bin);
+      if (executable) return { tool, version: selected.version ?? null, executable };
+    }
+    return null;
+  }
+
+  /** The credential files' modification times: a sign-in that writes them changes the key. */
+  async function credentialStamp(entry) {
+    const times = [];
+    for (const file of credentialFiles(entry, ctx.env, ctx.home)) {
+      try {
+        const stat = await ctx.fs.stat(file);
+        times.push(`${stat.mtimeMs ?? 0}/${stat.size ?? 0}`);
+      } catch {
+        times.push("-");
+      }
+    }
+    return times.join(",");
+  }
+
+  async function sourceControlAuth(entry, executable, version) {
+    return authFor(entry, executable, version, () => detectSourceControlAuth(ctx, entry, executable),
+      { ttl: ctx.scmAuthCacheTtlMs, stamp: await credentialStamp(entry) });
+  }
+
+  /**
+   * One CLI's facts from a snapshot, without asking it anything: whether it is
+   * installed and where its command is. The image's gh is run by name, as T3
+   * runs it; a mise one by the command in its install.
+   */
+  async function sourceControlFacts(entry, snap) {
+    if (entry.inImage) {
+      const version = await imageVersion(entry);
+      return { id: entry.id, name: entry.name, installed: Boolean(version), version, inProgress: false,
+        operation: null, operationState: null, managedVersions: [], failed: false, failure: null,
+        provider: entry.provider, bin: entry.bin, inImage: true, providedBy: null,
+        executable: version ? entry.bin : null, missingExtensions: [] };
+    }
+    const base = toolchainFacts(entry, snap);
+    const global = (snap.tools[entry.miseTool] ?? []).filter((candidate) => isGlobal(candidate) && candidate.installed);
+    const selected = global.find((candidate) => candidate.active) ?? global[0];
+    const own = base.installed ? (await binIn(selected?.install_path, entry.bin)) ?? await mise.which(ctx, entry.bin) : null;
+    const elsewhere = base.installed || base.inProgress ? null : await providerOf(entry, snap);
+    return {
+      ...base,
+      provider: entry.provider,
+      bin: entry.bin,
+      inImage: false,
+      // Signed in to or out of like any other, but updated and removed as the
+      // added tool it is.
+      providedBy: elsewhere ? { tool: elsewhere.tool, version: elsewhere.version } : null,
+      executable: own ?? elsewhere?.executable ?? null,
+      // An az from an added tool needs the extension as much as one installed here.
+      missingExtensions: base.installed || elsewhere ? await missingExtensions(ctx, entry) : [],
+    };
+  }
+
+  /**
+   * Each CLI's sign-in verdict, by id, for rows already read (`facts`), or
+   * from a fresh snapshot. Only installed CLIs that are not busy are asked,
+   * each through the cache above.
+   */
+  async function sourceControlAuthById(facts = null) {
+    let rows = facts;
+    if (!rows) {
+      const snap = await snapshot();
+      rows = await Promise.all(SOURCE_CONTROL.map((entry) => sourceControlFacts(entry, snap)));
+    }
+    const verdicts = {};
+    await Promise.all(rows.map(async (row) => {
+      const entry = getSourceControl(row.id);
+      if (!entry || !row.executable || row.inProgress) return;
+      verdicts[row.id] = await sourceControlAuth(entry, row.executable, row.version ?? row.providedBy?.version);
+    }));
+    return verdicts;
+  }
+
+  async function withAuth(rows, authenticate) {
+    const verdicts = authenticate ? await sourceControlAuthById(rows) : {};
+    return rows.map((row) => ({ ...row, auth: verdicts[row.id] ?? null }));
+  }
+
+  /**
+   * Every source control CLI, from one `mise ls`. `authenticate` runs each
+   * installed CLI's sign-in check (cached): too slow for every poll, so the
+   * setup service reads the rows with the toolchains and the verdicts
+   * (`auth`) in the background.
+   */
+  async function sourceControlStatus({ authenticate = true } = {}) {
+    const snap = await snapshot();
+    const rows = await Promise.all(SOURCE_CONTROL.map((entry) => sourceControlFacts(entry, snap)));
+    return { sourceControl: await withAuth(rows, authenticate), degraded: snap.degraded };
+  }
+
+  async function resolveSourceControl(id, { authenticate = true } = {}) {
+    const entry = getSourceControl(id);
+    if (!entry) throw new Error(`unknown source control CLI: ${id}`);
+    const [row] = await withAuth([await sourceControlFacts(entry, await snapshot())], authenticate);
+    return row;
+  }
+
+  /** The command to run a source control CLI by: gh by name, as T3 does; a mise one by its own. */
+  async function sourceControlExecutable(id) {
+    const entry = getSourceControl(id);
+    if (!entry) return null;
+    return (await sourceControlFacts(entry, await snapshot())).executable;
+  }
+
+  // Signing in runs the CLI against a server across the network: longer than
+  // a version probe, still bounded.
+  const SIGN_IN_TIMEOUT_MS = 60_000;
+
+  async function runScm(executable, args, { input = null, env = {} } = {}) {
+    return ctx.run([executable, ...args], {
+      env: { ...ctx.env, ...NO_PROMPT, ...env },
+      cwd: ctx.home,
+      timeoutMs: ctx.timeouts.signIn ?? SIGN_IN_TIMEOUT_MS,
+      input,
+    });
+  }
+
+  /** The CLI's credential files as they are: their text, or null for one that does not exist. */
+  async function saveCredentials(entry) {
+    const saved = [];
+    for (const file of credentialFiles(entry, ctx.env, ctx.home)) {
+      try {
+        saved.push({ file, text: await ctx.fs.readFile(file, "utf8") });
+      } catch (error) {
+        if (error?.code !== "ENOENT") throw error;
+        saved.push({ file, text: null });
+      }
+    }
+    return saved;
+  }
+
+  /** Put them back: the text each had, and no file where there was none. */
+  async function restoreCredentials(saved) {
+    for (const { file, text } of saved) {
+      try {
+        if (text === null) await ctx.fs.unlink(file);
+        else await ctx.fs.writeFile(file, text, { mode: 0o600 });
+      } catch { /* ENOENT on unlink: nothing to remove */ }
+    }
+  }
+
+  /**
+   * Sign a CLI in to one host with a token, and prove the host took it before
+   * saying so. Its credential files are copied first and put back when any
+   * step fails, so a failed attempt leaves things exactly as they were: a
+   * token glab or fj stored but the server refused is gone, and a sign-in that
+   * worked before - to this host or another - is still there. The token never
+   * reaches an argument, a log line or the answer.
+   */
+  async function signInSourceControl(id, { host: rawHost, token: rawToken } = {}) {
+    const entry = getSourceControl(id);
+    if (!entry) return { ok: false, code: "unknown-toolchain", error: `unknown source control CLI: ${id}` };
+    if (!DEFAULT_HOSTS[id]) return { ok: false, code: "unsupported", error: `${entry.name} signs in with a device code, not a token` };
+    const host = parseHost(rawHost || DEFAULT_HOSTS[id]);
+    if (!host.ok) return { ok: false, code: "invalid-host", error: host.error };
+    const token = parseToken(rawToken);
+    if (!token.ok) return { ok: false, code: "invalid-token", error: token.error };
+    const plan = tokenSignIn(entry, host.host, token.token);
+    const executable = await sourceControlExecutable(id);
+    if (!executable) return { ok: false, code: "not-installed", error: `${entry.name} is not installed` };
+
+    let saved;
+    try {
+      saved = await saveCredentials(entry);
+    } catch (error) {
+      return { ok: false, code: "failed", error: `could not read ${entry.name}'s sign-ins to keep them safe: ${error?.message ?? error}` };
+    }
+    const warnings = [];
+    const failed = async (error) => {
+      await restoreCredentials(saved);
+      return { ok: false, code: "not-accepted", error };
+    };
+    try {
+      for (const step of plan.steps) {
+        const result = await runScm(executable, step.args, { input: step.input ?? null, env: step.env ?? {} });
+        if (result.code === 0) continue;
+        const said = failureLine(result, token.token);
+        if (step.optional) { if (step.warn) warnings.push(`${step.warn}: ${said}`); continue; }
+        return await failed(said);
+      }
+      if (plan.verify) {
+        const checked = await runScm(executable, plan.verify);
+        if (checked.code !== 0) return await failed(`${host.host} did not accept the token: ${failureLine(checked, token.token)}`);
+      }
+    } finally {
+      authCache.delete(id);
+    }
+    const facts = await resolveSourceControl(id);
+    return { ok: true, code: "ok", host: host.host, ...(warnings.length ? { warning: warnings[0] } : {}), sourceControl: facts };
+  }
+
+  /**
+   * Sign a CLI out of one host (az out of everything). Its other hosts stay
+   * signed in. `account` is the one the page showed, for gh with more than one.
+   */
+  async function signOutSourceControl(id, { host: rawHost, account = null } = {}) {
+    const entry = getSourceControl(id);
+    if (!entry) return { ok: false, code: "unknown-toolchain", error: `unknown source control CLI: ${id}` };
+    const host = entry.auth === "az" ? { ok: true, host: null } : parseHost(rawHost || DEFAULT_HOSTS[id]);
+    if (!host.ok) return { ok: false, code: "invalid-host", error: host.error };
+    const executable = await sourceControlExecutable(id);
+    if (!executable) return { ok: false, code: "not-installed", error: `${entry.name} is not installed` };
+    // tea names its logins; one made in a terminal may not be named for its host.
+    const login = entry.auth === "tea" ? teaLoginFor((await runScm(executable, ["login", "list", "--output", "json"])).stdout, host.host) : null;
+    const result = await runScm(executable, signOutArgs(entry, host.host, { account: typeof account === "string" ? account : null, login }));
+    authCache.delete(id);
+    if (result.code !== 0) return { ok: false, code: "failed", error: failureLine(result) };
+    return { ok: true, code: "ok", sourceControl: await resolveSourceControl(id) };
+  }
+
+  /**
+   * A device-code sign-in for a CLI that has one (gh, az), resolved to what
+   * the setup service spawns and watches: the command, its environment, and
+   * how to read the page and the code it prints. The setup service owns the
+   * process, since it waits on someone approving on another device;
+   * `finishDeviceSignIn` runs what comes after.
+   */
+  async function deviceSignInSourceControl(id) {
+    const entry = getSourceControl(id);
+    if (!entry) return { ok: false, code: "unknown-toolchain", error: `unknown source control CLI: ${id}` };
+    const plan = deviceSignIn(entry);
+    if (!plan) return { ok: false, code: "unsupported", error: `${entry.name} signs in with a token` };
+    const executable = await sourceControlExecutable(id);
+    if (!executable) return { ok: false, code: "not-installed", error: `${entry.name} is not installed` };
+    return {
+      ok: true,
+      name: entry.name,
+      host: plan.host,
+      command: [executable, ...plan.args],
+      env: { ...ctx.env, ...NO_PROMPT },
+      cwd: ctx.home,
+      readPrompt: (output) => parseDevicePrompt(entry, output),
+    };
+  }
+
+  /**
+   * After a device sign-in was approved: its follow-up steps (gh as git's
+   * credential helper), whose failure is a warning, not a failed sign-in.
+   */
+  async function finishDeviceSignIn(id) {
+    const entry = getSourceControl(id);
+    const plan = entry ? deviceSignIn(entry) : null;
+    if (!plan) return { ok: false, code: "unknown-toolchain", error: `unknown source control CLI: ${id}` };
+    const executable = await sourceControlExecutable(id);
+    const warnings = [];
+    for (const step of executable ? plan.after : []) {
+      const result = await runScm(executable, step.args);
+      if (result.code !== 0) warnings.push(`${step.warn}: ${failureLine(result)}`);
+    }
+    authCache.delete(id);
+    return { ok: true, code: "ok", host: plan.host, warning: warnings[0] ?? null, sourceControl: await resolveSourceControl(id) };
+  }
+
+  /**
+   * The last sign-in verdict reached for each source control CLI, however old,
+   * by id, without asking any: what a poll shows while a fresh check runs.
+   */
+  function lastSourceControlAuth() {
+    const verdicts = {};
+    for (const entry of SOURCE_CONTROL) {
+      const cached = authCache.get(entry.id);
+      if (cached) verdicts[entry.id] = cached.value;
+    }
+    return verdicts;
+  }
+
+  /** Drop the cached sign-in verdict after a sign-in changes it. */
+  function invalidateAuth(id) {
+    if (id === undefined) authCache.clear();
+    else authCache.delete(id);
+  }
+
+  return {
+    status,
+    resolve,
+    install,
+    update,
+    uninstall,
+    latest,
+    latestRelease,
+    versions,
+    releaseAge,
+    invalidateAuth,
+    refreshLinks,
+    sourceControl: {
+      status: sourceControlStatus,
+      auth: sourceControlAuthById,
+      lastAuth: lastSourceControlAuth,
+      resolve: resolveSourceControl,
+      executable: sourceControlExecutable,
+      signIn: signInSourceControl,
+      signOut: signOutSourceControl,
+      deviceSignIn: deviceSignInSourceControl,
+      finishDeviceSignIn,
+      // The mise-installed ones run as toolchains: same lock, same record.
+      install: installToolchain,
+      update: updateToolchain,
+      uninstall: uninstallToolchain,
+      latest: latestToolchain,
+      latestRelease: latestToolchainRelease,
+    },
+    toolchains: {
+      status: toolchainStatus,
+      resolve: resolveToolchain,
+      install: installToolchain,
+      update: updateToolchain,
+      uninstall: uninstallToolchain,
+      latest: latestToolchain,
+      latestRelease: latestToolchainRelease,
+    },
+    packages: {
+      async status() {
+        const { packages, degraded } = await toolchainStatus();
+        return { packages, degraded };
+      },
+      resolve: resolvePackage,
+      normalize: normalizePackage,
+      install: installPackage,
+      update: updatePackage,
+      uninstall: uninstallPackage,
+      latest: latestPackage,
+      latestRelease: latestPackageRelease,
+      versions: packageVersions,
+      info: packageInfo,
+      registry: packageRegistry,
+    },
+    paths: {
+      home,
+      configDir: ctx.configDir,
+      dataDir: ctx.dataDir,
+      stateDir: ctx.stateDir,
+      cacheDir: ctx.cacheDir,
+      lock: ctx.lockPath,
+      state: ctx.statePath,
+      links: ctx.linkDir,
+    },
+  };
+}
+
+function union(...lists) {
+  const out = [];
+  for (const list of lists) {
+    for (const value of list ?? []) {
+      if (value && !out.includes(value)) out.push(value);
+    }
+  }
+  return out;
+}
+
+function operationError(code, message) {
+  const error = new Error(message);
+  error.code = code;
+  return error;
+}

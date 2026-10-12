@@ -1,4 +1,4 @@
-#!/usr/bin/env bash
+#!/bin/bash
 # Publish a port from inside this container to a public https URL.
 #
 # A dev server started here listens on a port nothing outside the container can
@@ -15,20 +15,29 @@
 # you do here shows up there, and whatever you do there shows up here.
 set -euo pipefail
 
-if [ "$(id -u)" -eq 0 ] && command -v gosu >/dev/null 2>&1 && id t3 >/dev/null 2>&1; then
-  exec gosu t3 "$0" "$@"
+# Root runs nothing through the PATH it was handed: under `docker exec` that is
+# the container's own, which a container recreated from an older image may have
+# carried over (see the entrypoint). The step-down gives it back to t3.
+inherited_path="$PATH"
+[ "$EUID" -ne 0 ] || PATH=/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin
+
+if [ "$EUID" -eq 0 ] && command -v gosu >/dev/null 2>&1 && id t3 >/dev/null 2>&1; then
+  exec env PATH="$inherited_path" "$(command -v gosu)" t3 "$0" "$@"
 fi
 
 SETUP_PORT="${T3_SETUP_PORT:-3774}"
 API="http://127.0.0.1:${SETUP_PORT}"
 STATE_DIR="${T3CODE_HOME:-${HOME:-/home/t3}/.t3}"
 
-# The entrypoint exports the key, but `docker exec` and the terminals T3 Code
-# opens do not inherit that, so fall back to the copy on the state volume.
-key="${T3_SETUP_KEY:-}"
-if [ -z "$key" ] && [ -r "${STATE_DIR}/setup-key" ]; then
-  key="$(cat "${STATE_DIR}/setup-key")"
+# The file on the state volume holds the key in effect, whatever set it, and
+# follows a key replaced from the setup page. T3_SETUP_KEY here may be the one
+# the container started with (T3 Code's terminals inherit it), or absent under
+# `docker exec`, so it is only the fallback.
+key=""
+if [ -r "${STATE_DIR}/setup-key" ]; then
+  key="$(head -n 1 "${STATE_DIR}/setup-key")"
 fi
+[ -n "$key" ] || key="${T3_SETUP_KEY:-}"
 if [ -z "$key" ]; then
   echo "t3-expose: no setup key found." >&2
   echo "           Set T3_SETUP_KEY, or check ${STATE_DIR}/setup-key exists." >&2
@@ -38,11 +47,21 @@ fi
 api() {
   local method="$1" path="$2" body="${3:-}"
   if [ -n "$body" ]; then
-    curl -fsS --max-time 20 -X "$method" -H "x-t3-setup-key: ${key}" \
+    curl -sS --fail-with-body --max-time 20 -X "$method" -H "x-t3-setup-key: ${key}" \
       -H 'content-type: application/json' -d "$body" "${API}${path}"
   else
-    curl -fsS --max-time 20 -X "$method" -H "x-t3-setup-key: ${key}" "${API}${path}"
+    curl -sS --fail-with-body --max-time 20 -X "$method" -H "x-t3-setup-key: ${key}" "${API}${path}"
   fi
+}
+
+# For a change the setup server may refuse. A refusal (curl's 22: an HTTP
+# error, with the server's JSON saying why on stdout) is an answer to show; only
+# failing to get one at all means the server is unreachable. curl's own line
+# about either adds nothing to what is printed below, so it is left out.
+answer() {
+  local rc=0
+  out="$(api "$@" 2>/dev/null)" || rc=$?
+  [ "$rc" -eq 0 ] || [ "$rc" -eq 22 ] || unreachable
 }
 
 unreachable() {
@@ -86,7 +105,7 @@ case "${1:-}" in
   stop|unexpose)
     port="${2:-}"
     [ -n "$port" ] || { echo "usage: t3-expose stop <port>" >&2; exit 2; }
-    out="$(api POST /ports/unexpose "{\"port\":${port}}")" || unreachable
+    answer POST /ports/unexpose "{\"port\":${port}}"
     if [ "$(printf '%s' "$out" | jq -r '.ok // false')" = "true" ]; then
       printf 'Stopped publishing port %s.\n' "$port"
     else
@@ -103,7 +122,7 @@ case "$port" in
   ''|*[!0-9]*) echo "t3-expose: '$port' is not a port number" >&2; exit 2 ;;
 esac
 
-out="$(api POST /ports/expose "{\"port\":${port}}")" || unreachable
+answer POST /ports/expose "{\"port\":${port}}"
 err="$(printf '%s' "$out" | jq -r '.error // ""')"
 if [ -n "$err" ]; then
   echo "t3-expose: $err" >&2

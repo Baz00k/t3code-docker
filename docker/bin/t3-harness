@@ -1,0 +1,334 @@
+#!/bin/bash
+# Manage the five supported agent harnesses through the shared manager.
+#
+# The setup console's Agents card and this CLI are thin surfaces over one
+# module (docker/harness/, baked as /opt/t3-harness/index.mjs), so they report
+# identical selections and errors - no PATH workaround, no second installer.
+# After every Install/Update/Uninstall this notifies T3 through a single
+# provider-integration sync() so a running server picks up the new binaryPath
+# without a restart.
+#
+#   t3-harness list [--json]
+#   t3-harness toolchains [--json]
+#   t3-harness source-control [--json]
+#   t3-harness status [--json] [id]
+#   t3-harness install <id> [--version <v>] [--json]
+#   t3-harness update <id> [--version <v>] [--json]
+#   t3-harness uninstall <id> [--json]
+#
+# Agent ids: claude, codex, opencode, grok, cursor. Toolchain ids: go, rust,
+# bun, deno, uv. Source control CLIs: glab, fj, tea, az, and gh, which is
+# part of the image: installing gh adds a newer one through mise, as an added
+# tool, and update and uninstall act on that one. Install defaults to mise's
+# latest and records that exact version; update is always explicit. Uninstalling an agent removes the managed
+# selection and executables but preserves credentials.
+#
+# Exit codes: 0 ok; 1 the lifecycle operation failed (see the JSON error);
+# 2 usage (bad args, unknown harness); 4 the manager module could not load.
+set -euo pipefail
+
+# Root runs nothing through the PATH it was handed: under `docker exec` that is
+# the container's own, which a container recreated from an older image may have
+# carried over (see the entrypoint). The step-down gives it back to t3.
+inherited_path="$PATH"
+[ "$EUID" -ne 0 ] || PATH=/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin
+
+: "${T3_INFRA_NODE:=/usr/local/bin/node}"
+: "${T3_HARNESS_MODULE:=/opt/t3-harness/index.mjs}"
+: "${T3_PROVIDER_MODULE:=/opt/t3-provider/index.mjs}"
+
+# `docker exec` lands as root (the image sets no USER so the entrypoint can
+# remap uids). Step down so installs land in the user's persistent home and
+# nothing here leaves root-owned files in the state directory.
+if [ "$EUID" -eq 0 ] && command -v gosu >/dev/null 2>&1 && id t3 >/dev/null 2>&1; then
+  exec env PATH="$inherited_path" "$(command -v gosu)" t3 "$0" "$@"
+fi
+
+# Managed harnesses live in the persistent user tool environment. Source it so
+# the manager inside sees the same MISE_* paths the setup server does.
+# shellcheck source=/dev/null
+[ -r /etc/profile.d/t3-user-env.sh ] && . /etc/profile.d/t3-user-env.sh
+
+usage() {
+  cat <<'USAGE'
+Usage: t3-harness <command> [options]
+
+  list [--json]                 the five agents
+  toolchains [--json]           Go, Rust, Bun, Deno, uv
+  source-control [--json]       gh, glab, fj, tea, az, and who each is signed in as
+  packages [--json]             every other tool in the global mise config
+  status [--json] [id]
+  install <id> [--version <version>] [--json]
+  update <id> [--version <version>] [--json]
+  uninstall <id> [--json]
+
+  id is an agent (claude, codex, opencode, grok, cursor), a toolchain
+  (go, rust, bun, deno, uv), a source control CLI (glab, fj, tea, az; gh comes
+  with the image, and installing it adds a newer one as an added tool), or any
+  other mise tool, which is managed as an
+  added tool: a registry name (ripgrep, kubectl) or a backend spec
+  (npm:prettier, github:owner/repo). --version applies to agents, and to
+  installing an added tool, where a prefix (3.12) takes the newest under it.
+
+Install resolves mise's latest to an exact version and records it. Agent Update
+takes the newest stable release immediately, and never selects an older one
+unless --version names it. Uninstalling an agent preserves its credentials. After a
+successful agent change the new selection is synced into T3's provider
+settings so a running server picks it up.
+
+Exit codes: 0 ok; 1 the operation failed; 2 usage; 4 no manager module.
+USAGE
+}
+
+command="${1:-}"
+[ -n "$command" ] || { usage >&2; exit 2; }
+case "$command" in
+  -h|--help) usage; exit 0 ;;
+esac
+shift || true
+
+json=0
+version=""
+pos=()
+while [ $# -gt 0 ]; do
+  case "$1" in
+    --json) json=1; shift ;;
+    --version)
+      if [ $# -lt 2 ] || [ -z "$2" ]; then
+        printf 't3-harness: --version needs a value\n\n' >&2; usage >&2; exit 2
+      fi
+      version="$2"; shift 2 ;;
+    --version=*) version="${1#--version=}"; shift ;;
+    -h|--help) usage; exit 0 ;;
+    --*) printf 't3-harness: unknown option %s\n\n' "$1" >&2; usage >&2; exit 2 ;;
+    *) pos+=("$1"); shift ;;
+  esac
+done
+if [ ${#pos[@]} -gt 0 ]; then set -- "${pos[@]}"; else set --; fi
+
+case "$command" in
+  list|toolchains|source-control|packages|status|install|update|uninstall) ;;
+  *) printf 't3-harness: unknown command %s\n\n' "$command" >&2; usage >&2; exit 2 ;;
+esac
+
+if { [ "$command" = "list" ] || [ "$command" = "toolchains" ] || [ "$command" = "source-control" ] || [ "$command" = "packages" ]; } && [ $# -gt 0 ]; then
+  printf 't3-harness: %s takes no id\n\n' "$command" >&2; usage >&2; exit 2
+fi
+if { [ "$command" = "install" ] || [ "$command" = "update" ] || [ "$command" = "uninstall" ]; } \
+   && [ $# -ne 1 ]; then
+  printf 't3-harness: %s needs exactly one id\n\n' "$command" >&2
+  usage >&2; exit 2
+fi
+if [ "$command" = "status" ] && [ $# -gt 1 ]; then
+  printf 't3-harness: status takes at most one harness id\n\n' >&2; usage >&2; exit 2
+fi
+# Any other id is an added tool; the manager validates it (it is an argv entry
+# for mise, so a leading dash is refused here too).
+if [ $# -eq 1 ] && [ "${1#-}" != "$1" ]; then
+  printf 't3-harness: %s is not a tool name\n\n' "$1" >&2; usage >&2; exit 2
+fi
+if [ -n "$version" ] && { [ "$command" = "list" ] || [ "$command" = "toolchains" ] || [ "$command" = "source-control" ] || [ "$command" = "packages" ] || [ "$command" = "status" ] || [ "$command" = "uninstall" ]; }; then
+  printf 't3-harness: --version only applies to install and update\n\n' >&2; usage >&2; exit 2
+fi
+
+# The driver is the contract: the same manager the setup server imports, the
+# same read-only status for list/status, the same install/update/uninstall
+# plus a single provider sync. JSON goes to stdout; human text goes to stdout
+# too, diagnostics to stderr.
+export T3_HARNESS_MODULE T3_PROVIDER_MODULE T3_HARNESS_JSON="$json" \
+  T3_HARNESS_VERSION="$version"
+export T3_HARNESS_COMMAND="$command" T3_HARNESS_ARG="${1:-}"
+
+"$T3_INFRA_NODE" -e '
+(async () => {
+  const command = process.env.T3_HARNESS_COMMAND;
+  const arg = process.env.T3_HARNESS_ARG || "";
+  const wantJson = process.env.T3_HARNESS_JSON === "1";
+  const version = process.env.T3_HARNESS_VERSION || "";
+  const modulePath = process.env.T3_HARNESS_MODULE || "/opt/t3-harness/index.mjs";
+  const providerPath = process.env.T3_PROVIDER_MODULE || "/opt/t3-provider/index.mjs";
+
+  let manager;
+  let catalogue;
+  try {
+    catalogue = await import(modulePath);
+    manager = catalogue.createHarnessManager();
+  } catch (error) {
+    process.stderr.write(`t3-harness: cannot load the harness manager (${modulePath}): ${error?.message ?? error}\n`);
+    process.exit(4);
+  }
+
+  const fmtAuth = (value) => value === true ? "signed in" : value === false ? "not signed in" : "unknown";
+  const humanRow = (h) => {
+    const version = h.installedVersion ?? h.recordedVersion ?? "-";
+    // A failed update leaves the previous release running, so runnable wins
+    // and the failure rides along as a note.
+    const state = h.inProgress ? `${h.operation ?? "working"}…`
+      : h.runnable ? `runnable (${fmtAuth(h.authenticated)})`
+        + (h.failed ? `; last ${h.operation ?? "operation"} failed: ${h.failure ?? "unknown error"}` : "")
+      : h.failed ? `failed: ${h.failure ?? "unknown error"}`
+      : h.installed ? "installed (not runnable)"
+      : "not installed";
+    return `${h.id}\t${version}\t${state}`;
+  };
+
+  const TOOLCHAIN_IDS = ["go", "rust", "bun", "deno", "uv"];
+  const AGENT_IDS = ["claude", "codex", "opencode", "grok", "cursor"];
+  const SCM_IDS = catalogue.SOURCE_CONTROL.map((entry) => entry.id);
+  // The gh in the image is not managed here, but a newer one added through mise
+  // (`install gh`, `mise use -g gh`, or Add a tool on the page) is an added
+  // tool like any other: installed, updated and removed as one.
+  const IMAGE_IDS = catalogue.SOURCE_CONTROL.filter((entry) => entry.inImage).map((entry) => entry.id);
+  const addedInstead = async (id) => IMAGE_IDS.includes(id) && command !== "status"
+    && (command === "install" || Boolean((await manager.packages.resolve(id).catch(() => null))?.configured));
+  const isPackage = (id) => Boolean(id) && !TOOLCHAIN_IDS.includes(id) && !AGENT_IDS.includes(id) && !SCM_IDS.includes(id);
+  const packageRow = (p) => `${p.id}\t${p.version ?? "-"}\t${p.inProgress ? `${p.operation ?? "working"}…`
+    : p.failed ? `failed: ${p.failure ?? "unknown error"}` : p.installed ? (p.adopted ? "installed (added with mise use)" : "installed") : "not installed"}`;
+  const toolRow = (t) => `${t.id}\t${t.version ?? "-"}\t${t.inProgress ? `${t.operation ?? "working"}…`
+    : t.installed ? "installed" : t.failed ? `failed: ${t.failure ?? "unknown error"}` : "not installed"}`;
+  const signIn = (a) => !a ? "" : a.status === "authenticated"
+    ? `signed in${a.account ? ` as ${a.account}` : ""}${a.host ? ` on ${a.host}` : ""}`
+    : a.status === "unauthenticated" ? `not signed in${a.detail ? ` (${a.detail})` : ""}`
+      : `sign-in could not be checked${a.detail ? ` (${a.detail})` : ""}`;
+  // A CLI an added tool provides is used and signed in to like one installed
+  // here; it is only updated and removed as that tool.
+  const scmRow = (c) => `${c.id}\t${c.version ?? c.providedBy?.version ?? "-"}\t${c.provider}\t${c.inProgress ? `${c.operation ?? "working"}…`
+    : c.installed || c.providedBy ? [c.inImage ? "in the image" : c.providedBy ? `from the added tool ${c.providedBy.tool}` : "installed", signIn(c.auth),
+      c.missingExtensions?.length ? `missing extension ${c.missingExtensions.join(", ")}` : ""].filter(Boolean).join("; ")
+    : c.failed ? `failed: ${c.failure ?? "unknown error"}` : "not installed"}`;
+
+  try {
+    if (command === "toolchains") {
+      const { toolchains, degraded } = await manager.toolchains.status();
+      if (wantJson) process.stdout.write(JSON.stringify({ toolchains, degraded }, null, 2) + "\n");
+      else for (const t of toolchains) process.stdout.write(toolRow(t) + "\n");
+      return;
+    }
+    if (command === "source-control") {
+      const { sourceControl, degraded } = await manager.sourceControl.status();
+      if (wantJson) process.stdout.write(JSON.stringify({ sourceControl, degraded }, null, 2) + "\n");
+      else for (const c of sourceControl) process.stdout.write(scmRow(c) + "\n");
+      return;
+    }
+    if (SCM_IDS.includes(arg) && !(await addedInstead(arg))) {
+      if (command === "status") {
+        const cli = await manager.sourceControl.resolve(arg);
+        if (wantJson) process.stdout.write(JSON.stringify({ sourceControl: cli }, null, 2) + "\n");
+        else process.stdout.write(scmRow(cli) + "\n");
+        return;
+      }
+      if (IMAGE_IDS.includes(arg)) {
+        // Only update and uninstall reach here, with no added one to act on.
+        process.stderr.write(command === "update"
+          ? `t3-harness: ${arg} is part of the image, and a newer image updates it; \`t3-harness install ${arg}\` adds a newer one now\n`
+          : `t3-harness: ${arg} is part of the image and stays; only one added with \`t3-harness install ${arg}\` can be removed\n`);
+        process.exit(2);
+      }
+      if (version) {
+        process.stderr.write("t3-harness: source control CLIs always install the latest release; --version applies to agents\n");
+        process.exit(2);
+      }
+      const result = await manager.sourceControl[command](arg);
+      if (wantJson) process.stdout.write(JSON.stringify(result, null, 2) + "\n");
+      else if (result?.ok) process.stdout.write(`${command} ${arg}: ${result.message || `ok${result.toolchain?.version ? ` (${result.toolchain.version})` : ""}`}\n`);
+      else process.stderr.write(`t3-harness: ${command} ${arg} failed [${result?.code ?? "failed"}]: ${result?.error ?? "unknown error"}\n`);
+      if (!result?.ok) process.exit(1);
+      return;
+    }
+    if (command === "packages") {
+      const { packages, degraded } = await manager.packages.status();
+      if (wantJson) process.stdout.write(JSON.stringify({ packages, degraded }, null, 2) + "\n");
+      else for (const p of packages) process.stdout.write(packageRow(p) + "\n");
+      return;
+    }
+    if (isPackage(arg) || (await addedInstead(arg))) {
+      if (command === "status") {
+        const normalized = await manager.packages.normalize(arg);
+        if (!normalized.ok) { process.stderr.write(`t3-harness: ${normalized.error}\n`); process.exit(2); }
+        const pkg = await manager.packages.resolve(normalized.id);
+        if (wantJson) process.stdout.write(JSON.stringify({ package: pkg }, null, 2) + "\n");
+        else process.stdout.write(packageRow(pkg) + "\n");
+        return;
+      }
+      if (version && command !== "install") {
+        process.stderr.write("t3-harness: --version applies to installing an added tool; update always takes the newest\n");
+        process.exit(2);
+      }
+      const result = await manager.packages[command](arg, version ? { version } : {});
+      if (wantJson) process.stdout.write(JSON.stringify(result, null, 2) + "\n");
+      else if (result?.ok) process.stdout.write(`${command} ${result.package?.id ?? arg}: ${result.message || `ok${command !== "uninstall" && result.package?.version ? ` (${result.package.version})` : ""}`}\n`);
+      else process.stderr.write(`t3-harness: ${command} ${arg} failed [${result?.code ?? "failed"}]: ${result?.error ?? "unknown error"}\n`);
+      if (!result?.ok) process.exit(result?.code === "invalid-tool" || result?.code === "managed-elsewhere" ? 2 : 1);
+      return;
+    }
+    if (TOOLCHAIN_IDS.includes(arg) && command !== "status") {
+      if (version) {
+        process.stderr.write("t3-harness: toolchains always install the latest release; --version applies to agents\n");
+        process.exit(2);
+      }
+      const result = await manager.toolchains[command](arg);
+      if (wantJson) process.stdout.write(JSON.stringify(result, null, 2) + "\n");
+      else if (result?.ok) process.stdout.write(`${command} ${arg}: ${result.message || `ok${result.toolchain?.version ? ` (${result.toolchain.version})` : ""}`}\n`);
+      else process.stderr.write(`t3-harness: ${command} ${arg} failed [${result?.code ?? "failed"}]: ${result?.error ?? "unknown error"}\n`);
+      if (!result?.ok) process.exit(1);
+      return;
+    }
+    if (command === "list") {
+      const { harnesses } = await manager.status({ authenticate: false });
+      if (wantJson) process.stdout.write(JSON.stringify({ harnesses }, null, 2) + "\n");
+      else for (const h of harnesses) process.stdout.write(humanRow(h) + "\n");
+      return;
+    }
+    if (command === "status") {
+      if (TOOLCHAIN_IDS.includes(arg)) {
+        const toolchain = await manager.toolchains.resolve(arg);
+        if (wantJson) process.stdout.write(JSON.stringify({ toolchain }, null, 2) + "\n");
+        else process.stdout.write(toolRow(toolchain) + "\n");
+        return;
+      }
+      if (arg) {
+        const harness = await manager.resolve(arg, { authenticate: false }).catch(() => null);
+        if (!harness) {
+          process.stderr.write(`t3-harness: unknown harness ${arg}\n`);
+          process.exit(2);
+        }
+        if (wantJson) process.stdout.write(JSON.stringify({ harness }, null, 2) + "\n");
+        else process.stdout.write(humanRow(harness) + "\n");
+        return;
+      }
+      const { harnesses, degraded } = await manager.status({ authenticate: false });
+      if (wantJson) process.stdout.write(JSON.stringify({ harnesses, degraded }, null, 2) + "\n");
+      else for (const h of harnesses) process.stdout.write(humanRow(h) + "\n");
+      return;
+    }
+
+    const options = version ? { version } : {};
+    const result = command === "install" ? await manager.install(arg, options)
+      : command === "update" ? await manager.update(arg, options)
+      : await manager.uninstall(arg);
+    let sync = null;
+    if (result?.ok) {
+      try {
+        const { createProviderIntegration } = await import(providerPath);
+        sync = await createProviderIntegration({ harness: manager }).sync();
+      } catch (error) {
+        sync = { ok: false, error: String(error?.message ?? error).slice(0, 200) };
+      }
+    }
+    const body = { ...result, ...(sync ? { sync } : {}) };
+    if (wantJson) process.stdout.write(JSON.stringify(body, null, 2) + "\n");
+    else if (result?.ok) {
+      const h = result.harness;
+      const where = h?.executable ?? "no executable";
+      process.stdout.write(`${command} ${arg}: ${result.message || `ok${h?.installedVersion ? ` (${h.installedVersion})` : ""} -> ${where}`}\n`);
+      if (sync && sync.ok === false) process.stderr.write(`t3-harness: provider sync failed: ${sync.error}\n`);
+    } else {
+      process.stderr.write(`t3-harness: ${command} ${arg} failed [${result?.code ?? "failed"}]: ${result?.error ?? "unknown error"}\n`);
+    }
+    if (!result?.ok) process.exit(1);
+  } catch (error) {
+    process.stderr.write(`t3-harness: ${command} failed: ${error?.message ?? error}\n`);
+    process.exit(1);
+  }
+})();
+'
